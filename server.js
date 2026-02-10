@@ -54,11 +54,15 @@ app.set('io', io);
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: [
+    'https://cherrish.in',
+    'https://www.cherrish.in',
+    'http://localhost:3000' // Keep for local dev
+  ],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
-}));
+}))
 app.options('*', cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
