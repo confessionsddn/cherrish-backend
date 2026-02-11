@@ -18,7 +18,7 @@ import visibilityRouter from './routes/visibility.js';
 import accessRequestRoutes from './routes/access-requests.js';
 import adminRoutes from './routes/admin.js';
 import adminMessagesRouter from './routes/admin-messages.js';
-import giftsRouter from './routes/gifts.js';  // ADD THIS
+import giftsRouter from './routes/gifts.js';
 import pollsRoutes from './routes/polls.js';
 import messagesRoutes from './routes/messages.js';
 
@@ -125,9 +125,20 @@ app.get('/', (req, res) => {
   });
 });
 
-// Setup admin
+// Setup admin (intentionally locked down)
 app.get('/setup-first-admin', async (req, res) => {
   try {
+    const setupSecret = process.env.ADMIN_SETUP_SECRET;
+    const providedSecret = req.query.secret;
+    const isDevelopment = process.env.NODE_ENV === 'development';
+
+    if (!isDevelopment && (!setupSecret || providedSecret !== setupSecret)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin setup route is disabled'
+      });
+    }
+
     const { query } = await import('./config/database.js');
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT false`);
     const userCheck = await query(`SELECT * FROM users WHERE email = 'itmconfessionddn@gmail.com'`);
