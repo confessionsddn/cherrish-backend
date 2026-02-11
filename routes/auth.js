@@ -260,7 +260,7 @@ router.get('/google/callback', (req, res, next) => {
         });
         const encodedData = Buffer.from(dataString).toString('base64');
         
-        return res.redirect(`${frontendUrl}/access-code?data=${encodedData}`);
+        return res.redirect(`${frontendUrl}/#/access-code?data=${encodedData}`);
       }
       
       // User exists - generate token and login
@@ -272,7 +272,7 @@ router.get('/google/callback', (req, res, next) => {
       }
       
       const token = generateToken(user);
-      return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+      return res.redirect(`${frontendUrl}/#/auth/callback?token=${token}`);
       
     } catch (error) {
       console.error('❌ OAuth callback error:', error);
