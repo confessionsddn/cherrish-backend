@@ -14,7 +14,7 @@ const router = express.Router();
 const pendingRegistrations = new Map();
 
 // Clean up old pending registrations every 5 minutes
-setInterval(() => {
+setInterval(() => { 
   const now = Date.now();
   for (const [key, value] of pendingRegistrations.entries()) {
     if (now - value.timestamp > 600000) { // 10 minutes
