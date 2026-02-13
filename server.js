@@ -8,6 +8,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import rateLimit from 'express-rate-limit';
 import passport from './middleware/auth.js';
+import webhookRoutes from './routes/webhooks.js';
 
 // Import ALL routes
 import authRoutes from './routes/auth.js';
@@ -106,6 +107,7 @@ app.use('/api/admin-messages', adminMessagesRouter);
 app.use('/api/gifts', giftsRouter);  // ADD THIS
 app.use('/api/polls', pollsRoutes);
 app.use('/api/messages', messagesRoutes);
+app.use('/api/webhooks', webhookRoutes);
 
 // Root route
 app.get('/', (req, res) => {
