@@ -1,4 +1,4 @@
-//backend/routes/payments.js - UPDATED WITH CORRECT AMOUNTS
+//backend/routes/payments.js - FIXED USER ID COMPARISON
 import express from 'express';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -13,7 +13,7 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ✅ UPDATED CREDIT PACKAGES - Match frontend exactly
+// UPDATED CREDIT PACKAGES - Match frontend exactly
 const CREDIT_PACKAGES = {
   starter: { credits: 70, price: 2900, name: 'Starter', bonus: 0 },      // ₹29
   popular: { credits: 200, price: 6900, name: 'Popular', bonus: 25 },   // ₹69
@@ -34,7 +34,7 @@ await query(`
   )
 `);
 
-// ✅ Create order for credit purchase
+// Create order for credit purchase
 router.post('/create-order', authenticateToken, async (req, res) => {
   try {
     const { package_type } = req.body;
@@ -54,7 +54,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
       currency: 'INR',
       receipt: receipt,
       notes: {
-        user_id: req.user.id,
+        user_id: String(req.user.id),  // ✅ CONVERT TO STRING
         package_type: package_type,
         credits: totalCredits.toString(),
         base_credits: pkg.credits.toString(),
@@ -64,7 +64,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    console.log('💰 Order created:', order.id, 'Amount:', pkg.price / 100);
+    console.log('💰 Order created:', order.id, 'Amount:', pkg.price / 100, 'User:', req.user.id);
 
     res.json({
       success: true,
@@ -77,15 +77,21 @@ router.post('/create-order', authenticateToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Create order error:', error);
+    console.error('❌ Create order error:', error);
     res.status(500).json({ error: 'Failed to create order', details: error.message });
   }
 });
 
-// ✅ Verify payment
+// Verify payment
 router.post('/verify-payment', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    console.log('🔍 Verifying payment:', {
+      order_id: razorpay_order_id,
+      payment_id: razorpay_payment_id,
+      user_id: req.user.id
+    });
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ error: 'Missing payment verification fields' });
@@ -99,8 +105,11 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       .digest('hex');
 
     if (razorpay_signature !== expectedSign) {
+      console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
+
+    console.log('✅ Signature verified');
 
     // Fetch order and payment details from Razorpay
     const [order, payment] = await Promise.all([
@@ -108,22 +117,44 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       razorpay.payments.fetch(razorpay_payment_id)
     ]);
 
+    console.log('📦 Order details:', {
+      status: payment.status,
+      amount: payment.amount,
+      order_notes: order.notes
+    });
+
     if (payment.status !== 'captured') {
+      console.error('❌ Payment not captured:', payment.status);
       return res.status(400).json({ error: 'Payment not captured' });
     }
 
     if (payment.order_id !== razorpay_order_id) {
+      console.error('❌ Payment/order mismatch');
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    if (!order.notes?.user_id || order.notes.user_id !== req.user.id) {
+    // ✅ FIXED: Compare user IDs as strings
+    const orderUserId = String(order.notes?.user_id || '');
+    const currentUserId = String(req.user.id);
+
+    console.log('👤 User ID comparison:', {
+      order_user_id: orderUserId,
+      current_user_id: currentUserId,
+      match: orderUserId === currentUserId
+    });
+
+    if (!orderUserId || orderUserId !== currentUserId) {
+      console.error('❌ User ID mismatch:', { orderUserId, currentUserId });
       return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
     const credits = parseInt(order.notes.credits);
     if (!Number.isInteger(credits) || credits <= 0) {
+      console.error('❌ Invalid credits:', credits);
       return res.status(400).json({ error: 'Invalid credits in order metadata' });
     }
+
+    console.log('💰 Processing credits:', credits);
 
     const client = await getClient();
     try {
@@ -140,12 +171,26 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
 
       if (insertReceipt.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'Payment already processed' });
+        console.log('⚠️ Payment already processed');
+        
+        // Get current credits anyway
+        const userResult = await query(
+          'SELECT credits FROM users WHERE id = $1',
+          [req.user.id]
+        );
+        
+        return res.json({
+          success: true,
+          credits_added: 0,
+          total_credits: userResult.rows[0].credits,
+          message: 'Payment already processed',
+          already_processed: true
+        });
       }
 
       // Add credits to user
-      await client.query(
-        'UPDATE users SET credits = credits + $1 WHERE id = $2',
+      const updateResult = await client.query(
+        'UPDATE users SET credits = credits + $1 WHERE id = $2 RETURNING credits',
         [credits, req.user.id]
       );
 
@@ -157,35 +202,40 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       );
 
       await client.query('COMMIT');
+      
+      const newCredits = updateResult.rows[0].credits;
+      
+      console.log('✅ Credits added successfully:', {
+        added: credits,
+        new_total: newCredits,
+        user_id: req.user.id
+      });
+
+      res.json({
+        success: true,
+        credits_added: credits,
+        total_credits: newCredits,
+        message: `${credits} credits added successfully!`
+      });
+
     } catch (dbError) {
       await client.query('ROLLBACK');
+      console.error('❌ Database error:', dbError);
       throw dbError;
     } finally {
       client.release();
     }
 
-    // Get updated credits
-    const userResult = await query(
-      'SELECT credits FROM users WHERE id = $1',
-      [req.user.id]
-    );
-
-    console.log('✅ Credits added:', credits, 'New total:', userResult.rows[0].credits);
-
-    res.json({
-      success: true,
-      credits_added: credits,
-      total_credits: userResult.rows[0].credits,
-      message: `${credits} credits added successfully!`
-    });
-
   } catch (error) {
-    console.error('Verify payment error:', error);
-    res.status(500).json({ error: 'Verification failed' });
+    console.error('❌ Verify payment error:', error);
+    res.status(500).json({ 
+      error: 'Verification failed',
+      details: error.message 
+    });
   }
 });
 
-// ✅ Create premium subscription
+// Create premium subscription
 router.post('/create-subscription', authenticateToken, async (req, res) => {
   try {
     const receipt = `pm_${req.user.id}_${Date.now()}`.substring(0, 40);
@@ -195,7 +245,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
       currency: 'INR',
       receipt: receipt,
       notes: {
-        user_id: req.user.id,
+        user_id: String(req.user.id),  // ✅ CONVERT TO STRING
         type: 'premium_subscription'
       }
     };
@@ -213,15 +263,21 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Create subscription error:', error);
+    console.error('❌ Create subscription error:', error);
     res.status(500).json({ error: 'Failed to create subscription', details: error.message });
   }
 });
 
-// ✅ Verify premium subscription
+// Verify premium subscription
 router.post('/verify-subscription', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    console.log('👑 Verifying premium subscription:', {
+      order_id: razorpay_order_id,
+      payment_id: razorpay_payment_id,
+      user_id: req.user.id
+    });
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ error: 'Missing payment verification fields' });
@@ -235,6 +291,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       .digest('hex');
 
     if (razorpay_signature !== expectedSign) {
+      console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
@@ -252,7 +309,12 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    if (!order.notes?.user_id || order.notes.user_id !== req.user.id) {
+    // ✅ FIXED: Compare user IDs as strings
+    const orderUserId = String(order.notes?.user_id || '');
+    const currentUserId = String(req.user.id);
+
+    if (!orderUserId || orderUserId !== currentUserId) {
+      console.error('❌ User ID mismatch');
       return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
@@ -274,7 +336,12 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
 
       if (insertReceipt.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'Payment already processed' });
+        console.log('⚠️ Premium already processed');
+        return res.json({
+          success: true,
+          message: 'Premium already activated',
+          already_processed: true
+        });
       }
 
       // Create or update premium subscription
@@ -310,14 +377,16 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       );
 
       await client.query('COMMIT');
+      
+      console.log('✅ Premium activated for user:', req.user.id);
+
     } catch (dbError) {
       await client.query('ROLLBACK');
+      console.error('❌ Database error:', dbError);
       throw dbError;
     } finally {
       client.release();
     }
-
-    console.log('👑 Premium activated for user:', req.user.email);
 
     res.json({
       success: true,
@@ -326,8 +395,11 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Verify subscription error:', error);
-    res.status(500).json({ error: 'Verification failed' });
+    console.error('❌ Verify subscription error:', error);
+    res.status(500).json({ 
+      error: 'Verification failed',
+      details: error.message 
+    });
   }
 });
 
