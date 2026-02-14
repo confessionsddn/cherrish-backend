@@ -1,4 +1,4 @@
-//payments.js
+//backend/routes/payments.js - UPDATED WITH CORRECT AMOUNTS
 import express from 'express';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -13,12 +13,12 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// Credit packages
+// ✅ UPDATED CREDIT PACKAGES - Match frontend exactly
 const CREDIT_PACKAGES = {
-  starter: { credits: 100, price: 3900, name: 'Starter', bonus: 0 },
-  popular: { credits: 250, price: 6900, name: 'Popular', bonus: 50 },
-  best: { credits: 500, price: 12900, name: 'Best Value', bonus: 75 },
-  elite: { credits: 1000, price: 19900, name: 'Elite', bonus: 150 }
+  starter: { credits: 70, price: 2900, name: 'Starter', bonus: 0 },      // ₹29
+  popular: { credits: 200, price: 6900, name: 'Popular', bonus: 25 },   // ₹69
+  best: { credits: 400, price: 13900, name: 'Best Value', bonus: 50 },  // ₹139
+  elite: { credits: 800, price: 24900, name: 'Elite', bonus: 100 }      // ₹249
 };
 
 // Ensure idempotency storage exists
@@ -27,14 +27,14 @@ await query(`
     id SERIAL PRIMARY KEY,
     payment_id TEXT UNIQUE NOT NULL,
     order_id TEXT NOT NULL,
-    user_id INTEGER NOT NULL,
+    user_id UUID NOT NULL,
     payment_type TEXT NOT NULL,
     amount INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT NOW()
   )
 `);
 
-// Create order for credit purchase
+// ✅ Create order for credit purchase
 router.post('/create-order', authenticateToken, async (req, res) => {
   try {
     const { package_type } = req.body;
@@ -46,7 +46,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
     const pkg = CREDIT_PACKAGES[package_type];
     const totalCredits = pkg.credits + pkg.bonus;
 
-    // FIXED: Shortened receipt to stay under 40 chars
+    // Shortened receipt to stay under 40 chars
     const receipt = `cr_${req.user.id}_${Date.now()}`.substring(0, 40);
 
     const options = {
@@ -64,7 +64,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    console.log('💰 Order created:', order.id);
+    console.log('💰 Order created:', order.id, 'Amount:', pkg.price / 100);
 
     res.json({
       success: true,
@@ -82,7 +82,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
   }
 });
 
-// Verify payment
+// ✅ Verify payment
 router.post('/verify-payment', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -91,6 +91,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Missing payment verification fields' });
     }
 
+    // Verify signature
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSign = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -101,6 +102,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
+    // Fetch order and payment details from Razorpay
     const [order, payment] = await Promise.all([
       razorpay.orders.fetch(razorpay_order_id),
       razorpay.payments.fetch(razorpay_payment_id)
@@ -114,7 +116,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    if (!order.notes?.user_id || parseInt(order.notes.user_id) !== req.user.id) {
+    if (!order.notes?.user_id || order.notes.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
@@ -127,6 +129,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
     try {
       await client.query('BEGIN');
 
+      // Idempotency check
       const insertReceipt = await client.query(
         `INSERT INTO payment_receipts (payment_id, order_id, user_id, payment_type, amount)
          VALUES ($1, $2, $3, 'credits', $4)
@@ -140,11 +143,13 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
         return res.status(409).json({ error: 'Payment already processed' });
       }
 
+      // Add credits to user
       await client.query(
         'UPDATE users SET credits = credits + $1 WHERE id = $2',
         [credits, req.user.id]
       );
 
+      // Log transaction
       await client.query(
         `INSERT INTO credit_transactions (user_id, amount, type, description)
          VALUES ($1, $2, 'purchased', $3)`,
@@ -159,29 +164,30 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       client.release();
     }
 
+    // Get updated credits
     const userResult = await query(
       'SELECT credits FROM users WHERE id = $1',
       [req.user.id]
     );
 
-    console.log('✅ Credits added:', credits);
+    console.log('✅ Credits added:', credits, 'New total:', userResult.rows[0].credits);
 
     res.json({
       success: true,
       credits_added: credits,
-      total_credits: userResult.rows[0].credits
+      total_credits: userResult.rows[0].credits,
+      message: `${credits} credits added successfully!`
     });
 
   } catch (error) {
-    console.error('Verify error:', error);
+    console.error('Verify payment error:', error);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// Create premium subscription
+// ✅ Create premium subscription
 router.post('/create-subscription', authenticateToken, async (req, res) => {
   try {
-    // FIXED: Shortened receipt to stay under 40 chars
     const receipt = `pm_${req.user.id}_${Date.now()}`.substring(0, 40);
 
     const options = {
@@ -196,7 +202,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
 
     const order = await razorpay.orders.create(options);
 
-    console.log('👑 Premium order:', order.id);
+    console.log('👑 Premium order created:', order.id);
 
     res.json({
       success: true,
@@ -212,7 +218,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
   }
 });
 
-// Verify premium subscription
+// ✅ Verify premium subscription
 router.post('/verify-subscription', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -221,6 +227,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Missing payment verification fields' });
     }
 
+    // Verify signature
     const sign = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSign = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -231,6 +238,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
+    // Fetch order and payment details
     const [order, payment] = await Promise.all([
       razorpay.orders.fetch(razorpay_order_id),
       razorpay.payments.fetch(razorpay_payment_id)
@@ -244,7 +252,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    if (!order.notes?.user_id || parseInt(order.notes.user_id) !== req.user.id) {
+    if (!order.notes?.user_id || order.notes.user_id !== req.user.id) {
       return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
@@ -255,6 +263,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
     try {
       await client.query('BEGIN');
 
+      // Idempotency check
       const insertReceipt = await client.query(
         `INSERT INTO payment_receipts (payment_id, order_id, user_id, payment_type, amount)
          VALUES ($1, $2, $3, 'premium', $4)
@@ -268,19 +277,32 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
         return res.status(409).json({ error: 'Payment already processed' });
       }
 
+      // Create or update premium subscription
       await client.query(
-        `INSERT INTO premium_subscriptions (user_id, start_date, end_date, is_active, spotlight_uses_remaining, spotlight_12h_remaining, boost_12h_remaining)
+        `INSERT INTO premium_subscriptions (
+          user_id, start_date, end_date, is_active, 
+          spotlight_uses_remaining, spotlight_12h_remaining, boost_12h_remaining
+        )
         VALUES ($1, NOW(), $2, true, 10, 10, 10)
         ON CONFLICT (user_id) 
-        DO UPDATE SET end_date = $2, is_active = true, spotlight_uses_remaining = 10, spotlight_12h_remaining = 10, boost_12h_remaining = 10, daily_edit_used = false, daily_voice_used = false`,
+        DO UPDATE SET 
+          end_date = $2, 
+          is_active = true, 
+          spotlight_uses_remaining = 10, 
+          spotlight_12h_remaining = 10, 
+          boost_12h_remaining = 10, 
+          daily_edit_used = false, 
+          daily_voice_used = false`,
         [req.user.id, endDate]
       );
 
+      // Update user as premium and add 150 bonus credits
       await client.query(
         'UPDATE users SET is_premium = true, credits = credits + 150 WHERE id = $1',
         [req.user.id]
       );
 
+      // Log bonus credits transaction
       await client.query(
         `INSERT INTO credit_transactions (user_id, amount, type, description)
          VALUES ($1, 150, 'earned', 'Premium subscription bonus')`,
@@ -295,11 +317,11 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       client.release();
     }
 
-    console.log('👑 Premium activated:', req.user.email);
+    console.log('👑 Premium activated for user:', req.user.email);
 
     res.json({
       success: true,
-      message: 'Premium activated!',
+      message: 'Premium activated! Welcome to the elite club!',
       premium_until: endDate
     });
 
