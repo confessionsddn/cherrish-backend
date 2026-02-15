@@ -188,6 +188,81 @@ router.get('/:id', optionalAuth, async (req, res) => {
   }
 });
 
+
+router.get('/:id/reactors', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reaction_type } = req.query; // Optional: filter by type
+    
+    // Check if user is premium or owns the confession
+    const userResult = await query(
+      `SELECT is_premium FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    
+    const confessionResult = await query(
+      `SELECT user_id FROM confessions WHERE id = $1`,
+      [id]
+    );
+    
+    const isPremium = userResult.rows[0]?.is_premium;
+    const isOwner = confessionResult.rows[0]?.user_id === req.user.id;
+    
+    if (!isPremium && !isOwner) {
+      return res.status(403).json({ 
+        error: 'Premium feature',
+        message: 'Upgrade to premium to see who reacted'
+      });
+    }
+    
+    // Fetch reactors
+    let sqlQuery = `
+      SELECT 
+        username,
+        user_number,
+        is_premium,
+        reaction_type,
+        created_at
+      FROM reactions
+      WHERE confession_id = $1
+    `;
+    
+    const params = [id];
+    
+    if (reaction_type) {
+      sqlQuery += ` AND reaction_type = $2`;
+      params.push(reaction_type);
+    }
+    
+    sqlQuery += ` ORDER BY created_at DESC LIMIT 100`;
+    
+    const result = await query(sqlQuery, params);
+    
+    // Group by reaction type
+    const grouped = result.rows.reduce((acc, row) => {
+      if (!acc[row.reaction_type]) {
+        acc[row.reaction_type] = [];
+      }
+      acc[row.reaction_type].push({
+        username: row.username,
+        user_number: row.user_number,
+        is_premium: row.is_premium,
+        reacted_at: row.created_at
+      });
+      return acc;
+    }, {});
+    
+    res.json({
+      success: true,
+      reactors: grouped,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching reactors:', error);
+    res.status(500).json({ error: 'Failed to fetch reactors' });
+  }
+});
 // Create new confession (with premium support)
 // Create new confession (with premium support)
 router.post('/', authenticateToken, upload.single('audio'), async (req, res) => {
