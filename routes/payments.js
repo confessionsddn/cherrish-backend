@@ -1,9 +1,10 @@
-//backend/routes/payments.js - COMPLETE VERSION
+//backend/routes/payments.js - FIXED FOR BANNED USERS
 import express from 'express';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { query, getClient } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import jwt from 'jsonwebtoken';
 
 const router = express.Router();
 
@@ -33,6 +34,37 @@ await query(`
     created_at TIMESTAMP DEFAULT NOW()
   )
 `);
+
+// ✅ SPECIAL AUTH FOR BANNED USERS
+const authenticateEvenIfBanned = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Get user (even if banned!)
+    const userResult = await query(
+      'SELECT id, email, username, is_banned FROM users WHERE id = $1',
+      [decoded.id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    req.user = userResult.rows[0];
+    next();
+
+  } catch (error) {
+    console.error('Auth error:', error);
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
 
 // ==========================================
 // CREDIT PURCHASE ROUTES
@@ -405,13 +437,19 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// UNBAN PAYMENT ROUTES
+// UNBAN PAYMENT ROUTES (SPECIAL AUTH!)
 // ==========================================
 
-// Create unban order
-router.post('/create-unban-order', authenticateToken, async (req, res) => {
+// Create unban order - WORKS EVEN IF BANNED
+router.post('/create-unban-order', authenticateEvenIfBanned, async (req, res) => {
   try {
     const { ban_duration } = req.body;
+    
+    console.log('🚫 Unban order request:', {
+      user_id: req.user.id,
+      is_banned: req.user.is_banned,
+      ban_duration: ban_duration
+    });
     
     const validDurations = ['3', '7', 'permanent'];
     if (!validDurations.includes(ban_duration)) {
@@ -455,15 +493,16 @@ router.post('/create-unban-order', authenticateToken, async (req, res) => {
   }
 });
 
-// Verify unban payment
-router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
+// Verify unban payment - WORKS EVEN IF BANNED
+router.post('/verify-unban-payment', authenticateEvenIfBanned, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
     console.log('🚫 Verifying unban payment:', {
       order_id: razorpay_order_id,
       payment_id: razorpay_payment_id,
-      user_id: req.user.id
+      user_id: req.user.id,
+      is_banned: req.user.is_banned
     });
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
