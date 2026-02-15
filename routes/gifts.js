@@ -1,220 +1,51 @@
 // backend/routes/gifts.js
 import express from 'express';
-import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
-import { logActivity } from '../middleware/activity-logger.js';
+import { query, getClient } from '../config/database.js';
 
 const router = express.Router();
 
-// Get all available gifts (catalog)
-router.get('/catalog', authenticateToken, async (req, res) => {
-  try {
-    const result = await query(
-      `SELECT * FROM gift_catalog ORDER BY price ASC`
-    );
-    
-    res.json({
-      success: true,
-      gifts: result.rows
-    });
-  } catch (error) {
-    console.error('Get catalog error:', error);
-    res.status(500).json({ error: 'Failed to get gifts' });
-  }
-});
+// ============================================
+// GIFT CONFIGURATION
+// ============================================
 
-// Get user's unlocked gifts
-router.get('/my-unlocked', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    const result = await query(
-      `SELECT 
-        gr.gift_id,
-        gc.title,
-        gc.icon,
-        gc.type,
-        gr.total_credits_received,
-        gr.gift_count,
-        gr.is_unlocked,
-        gr.unlocked_at,
-        gc.unlock_threshold
-       FROM gifts_received gr
-       JOIN gift_catalog gc ON gr.gift_id = gc.id
-       WHERE gr.user_id = $1
-       ORDER BY gr.is_unlocked DESC, gr.total_credits_received DESC`,
-      [userId]
-    );
-    
-    res.json({
-      success: true,
-      gifts: result.rows
-    });
-  } catch (error) {
-    console.error('Get unlocked gifts error:', error);
-    res.status(500).json({ error: 'Failed to get unlocked gifts' });
-  }
-});
+const GIFT_CATALOG = {
+  // EFFECTS (Awards)
+  gold_hearts: { name: 'Sparkle Hearts', price: 25, type: 'effect', theme: 'sparkle', unlock_at: 50 },
+  cyber_glitch: { name: 'Cyber Glitch', price: 35, type: 'effect', theme: 'cyber', unlock_at: 50 },
+  holo_foil: { name: 'Holo Foil', price: 50, type: 'effect', theme: 'holo', unlock_at: 50 },
+  sunset_bg: { name: 'Vaporwave', price: 40, type: 'effect', theme: 'vaporwave', unlock_at: 50 },
+  starry_night: { name: 'Galactic Mode', price: 45, type: 'effect', theme: 'galaxy', unlock_at: 50 },
+  retro_vhs: { name: 'Retro VHS', price: 30, type: 'effect', theme: 'retro', unlock_at: 50 },
+  
+  // PHYSICAL GIFTS
+  roses: { name: 'Mega Bouquet', price: 20, type: 'gift', theme: 'rose', unlock_at: 50 },
+  ring: { name: 'Diamond Ring', price: 100, type: 'gift', theme: 'diamond', unlock_at: 50 },
+  chocolates: { name: 'Luxury Box', price: 15, type: 'gift', theme: 'chocolate', unlock_at: 50 },
+  teddy: { name: 'Giant Teddy', price: 40, type: 'gift', theme: 'teddy', unlock_at: 50 },
+  mixtape: { name: 'Lo-Fi Mixtape', price: 15, type: 'gift', theme: 'lofi', unlock_at: 50 },
+  poem: { name: 'Epic Poem', price: 25, type: 'gift', theme: 'poem', unlock_at: 50 }
+};
 
-// Send a gift
-router.post('/send', authenticateToken, logActivity('gift_sent'), async (req, res) => {
+// ============================================
+// SEND GIFT TO CONFESSION
+// ============================================
+
+router.post('/send', authenticateToken, async (req, res) => {
   try {
-    const { gift_id, receiver_id, confession_id } = req.body;
+    const { confession_id, gift_type, message } = req.body;
     const senderId = req.user.id;
     
-    // Validate inputs
-    if (!gift_id || !receiver_id) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    // Validate gift type
+    if (!GIFT_CATALOG[gift_type]) {
+      return res.status(400).json({ error: 'Invalid gift type' });
     }
     
-    // Can't send gift to yourself
-    if (senderId === receiver_id) {
-      return res.status(400).json({ error: 'Cannot send gift to yourself!' });
-    }
+    const gift = GIFT_CATALOG[gift_type];
     
-    // Get gift info
-    const giftResult = await query(
-      'SELECT * FROM gift_catalog WHERE id = $1',
-      [gift_id]
-    );
-    
-    if (giftResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Gift not found' });
-    }
-    
-    const gift = giftResult.rows[0];
-    
-    // Check sender has enough credits
-    const senderResult = await query(
-      'SELECT credits FROM users WHERE id = $1',
-      [senderId]
-    );
-    
-    if (senderResult.rows[0].credits < gift.price) {
-      return res.status(400).json({ 
-        error: 'Not enough credits!',
-        required: gift.price,
-        current: senderResult.rows[0].credits
-      });
-    }
-    
-    // Deduct credits from sender
-    await query(
-      'UPDATE users SET credits = credits - $1 WHERE id = $2',
-      [gift.price, senderId]
-    );
-    
-    // Log transaction
-    await query(
-      `INSERT INTO credit_transactions (user_id, amount, type, description)
-       VALUES ($1, $2, 'spent', $3)`,
-      [senderId, -gift.price, `Sent ${gift.title} gift`]
-    );
-    
-    // Record gift sent
-    await query(
-      `INSERT INTO gifts_sent (gift_id, sender_id, receiver_id, confession_id, credits_spent)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [gift_id, senderId, receiver_id, confession_id, gift.price]
-    );
-    
-    // Update receiver's gift progress
-    await query(
-      `INSERT INTO gifts_received (user_id, gift_id, total_credits_received, gift_count)
-       VALUES ($1, $2, $3, 1)
-       ON CONFLICT (user_id, gift_id) 
-       DO UPDATE SET 
-         total_credits_received = gifts_received.total_credits_received + $3,
-         gift_count = gifts_received.gift_count + 1`,
-      [receiver_id, gift_id, gift.price]
-    );
-    
-    // Check if unlocked
-    const progressResult = await query(
-      `SELECT total_credits_received, is_unlocked 
-       FROM gifts_received 
-       WHERE user_id = $1 AND gift_id = $2`,
-      [receiver_id, gift_id]
-    );
-    
-    const progress = progressResult.rows[0];
-    let justUnlocked = false;
-    
-    if (!progress.is_unlocked && progress.total_credits_received >= gift.unlock_threshold) {
-      // UNLOCK THE GIFT!
-      await query(
-        `UPDATE gifts_received 
-         SET is_unlocked = true, unlocked_at = NOW()
-         WHERE user_id = $1 AND gift_id = $2`,
-        [receiver_id, gift_id]
-      );
-      justUnlocked = true;
-    }
-    
-    console.log(`🎁 Gift sent: ${gift.title} from ${senderId} to ${receiver_id}`);
-    
-    res.json({
-      success: true,
-      message: `${gift.title} sent!`,
-      credits_spent: gift.price,
-      credits_remaining: senderResult.rows[0].credits - gift.price,
-      receiver_progress: {
-        total_received: progress.total_credits_received,
-        unlock_threshold: gift.unlock_threshold,
-        unlocked: justUnlocked || progress.is_unlocked,
-        just_unlocked: justUnlocked
-      }
-    });
-    
-  } catch (error) {
-    console.error('Send gift error:', error);
-    res.status(500).json({ error: 'Failed to send gift' });
-  }
-});
-
-// Get received gifts (for a user to see their inventory)
-router.get('/received', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    const result = await query(
-      `SELECT 
-        gc.id as gift_id,
-        gc.title,
-        gc.icon,
-        gc.price,
-        gc.unlock_threshold,
-        gc.type,
-        gr.total_credits_received,
-        gr.gift_count,
-        gr.is_unlocked,
-        gr.unlocked_at
-       FROM gifts_received gr
-       JOIN gift_catalog gc ON gr.gift_id = gc.id
-       WHERE gr.user_id = $1
-       ORDER BY gr.is_unlocked DESC, gr.total_credits_received DESC`,
-      [userId]
-    );
-    
-    res.json({
-      success: true,
-      gifts: result.rows
-    });
-  } catch (error) {
-    console.error('Get received gifts error:', error);
-    res.status(500).json({ error: 'Failed to get gifts' });
-  }
-});
-
-// Apply gift to confession (only unlocked effects)
-router.post('/apply', authenticateToken, async (req, res) => {
-  try {
-    const { confession_id, gift_id } = req.body;
-    const userId = req.user.id;
-    
-    // Check if user owns this confession
+    // Check if confession exists
     const confessionResult = await query(
-      'SELECT user_id FROM confessions WHERE id = $1',
+      'SELECT id, user_id FROM confessions WHERE id = $1 AND status = $\'approved\'',
       [confession_id]
     );
     
@@ -222,135 +53,419 @@ router.post('/apply', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Confession not found' });
     }
     
-    if (confessionResult.rows[0].user_id !== userId) {
-      return res.status(403).json({ error: 'Not your confession!' });
+    const recipientId = confessionResult.rows[0].user_id;
+    
+    // Can't gift your own confession
+    if (recipientId === senderId) {
+      return res.status(400).json({ error: 'You cannot gift your own confession!' });
     }
     
-    // Check if gift is unlocked
-    const giftCheck = await query(
-      `SELECT gr.is_unlocked, gc.type 
-       FROM gifts_received gr
-       JOIN gift_catalog gc ON gr.gift_id = gc.id
-       WHERE gr.user_id = $1 AND gr.gift_id = $2`,
-      [userId, gift_id]
+    // Check sender has enough credits
+    const senderResult = await query(
+      'SELECT credits, username, user_number FROM users WHERE id = $1',
+      [senderId]
     );
     
-    if (giftCheck.rows.length === 0 || !giftCheck.rows[0].is_unlocked) {
-      return res.status(400).json({ error: 'Gift not unlocked yet!' });
+    if (senderResult.rows[0].credits < gift.price) {
+      return res.status(400).json({ 
+        error: `Not enough credits! You need ${gift.price} credits.`,
+        required: gift.price,
+        current: senderResult.rows[0].credits
+      });
     }
     
-    // Only effects can be applied
-    if (giftCheck.rows[0].type !== 'effect') {
-      return res.status(400).json({ error: 'Only effects can be applied to confessions!' });
+    const client = await getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Deduct credits from sender
+      await client.query(
+        'UPDATE users SET credits = credits - $1 WHERE id = $2',
+        [gift.price, senderId]
+      );
+      
+      // Log transaction
+      await client.query(
+        `INSERT INTO credit_transactions (user_id, amount, type, description)
+         VALUES ($1, $2, 'spent', $3)`,
+        [senderId, -gift.price, `Sent ${gift.name} gift`]
+      );
+      
+      // Create gift record
+      const giftResult = await client.query(
+        `INSERT INTO confession_gifts (confession_id, sender_id, gift_type, gift_price, message)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, created_at`,
+        [confession_id, senderId, gift_type, gift.price, message || null]
+      );
+      
+      // Update recipient's gift inventory
+      const inventoryResult = await client.query(
+        `INSERT INTO user_gift_inventory (user_id, gift_type, total_received)
+         VALUES ($1, $2, 1)
+         ON CONFLICT (user_id, gift_type)
+         DO UPDATE SET total_received = user_gift_inventory.total_received + 1
+         RETURNING total_received`,
+        [recipientId, gift_type]
+      );
+      
+      const totalReceived = inventoryResult.rows[0].total_received;
+      
+      // Check if theme unlocked
+      let themeUnlocked = false;
+      if (totalReceived >= gift.unlock_at) {
+        // Unlock theme
+        await client.query(
+          `INSERT INTO user_active_themes (user_id, theme_name, is_active)
+           VALUES ($1, $2, false)
+           ON CONFLICT (user_id, theme_name) DO NOTHING`,
+          [recipientId, gift.theme]
+        );
+        
+        await client.query(
+          `UPDATE user_gift_inventory 
+           SET unlocked_theme = true 
+           WHERE user_id = $1 AND gift_type = $2`,
+          [recipientId, gift_type]
+        );
+        
+        themeUnlocked = true;
+      }
+      
+      await client.query('COMMIT');
+      
+      console.log(`🎁 Gift sent: ${gift.name} from ${senderId} to ${recipientId}`);
+      
+      // Create notification (we'll implement OneSignal in next batch)
+      await query(
+        `INSERT INTO notification_queue (user_id, notification_type, title, message, data)
+         VALUES ($1, 'gift', $2, $3, $4)`,
+        [
+          recipientId,
+          '🎁 Gift Received!',
+          `${senderResult.rows[0].username} sent you ${gift.name}!`,
+          JSON.stringify({
+            confession_id,
+            gift_type,
+            sender_username: senderResult.rows[0].username,
+            sender_user_number: senderResult.rows[0].user_number,
+            theme_unlocked: themeUnlocked,
+            total_received: totalReceived
+          })
+        ]
+      );
+      
+      res.json({
+        success: true,
+        message: `${gift.name} sent successfully!`,
+        gift_id: giftResult.rows[0].id,
+        credits_spent: gift.price,
+        credits_remaining: senderResult.rows[0].credits - gift.price,
+        recipient_progress: {
+          total_received: totalReceived,
+          needed_for_theme: gift.unlock_at,
+          theme_unlocked: themeUnlocked,
+          theme_name: gift.theme
+        }
+      });
+      
+    } catch (dbError) {
+      await client.query('ROLLBACK');
+      throw dbError;
+    } finally {
+      client.release();
     }
-    
-    // Apply gift (replaces existing if any)
-    await query(
-      `INSERT INTO applied_gifts (confession_id, user_id, gift_id)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (confession_id) 
-       DO UPDATE SET gift_id = $3, applied_at = NOW()`,
-      [confession_id, userId, gift_id]
-    );
-    
-    console.log(`✨ Applied gift ${gift_id} to confession ${confession_id}`);
-    
-    res.json({
-      success: true,
-      message: 'Gift effect applied!'
-    });
     
   } catch (error) {
-    console.error('Apply gift error:', error);
-    res.status(500).json({ error: 'Failed to apply gift' });
+    console.error('Send gift error:', error);
+    res.status(500).json({ error: 'Failed to send gift' });
   }
 });
 
-// Remove applied gift
-router.delete('/remove/:confessionId', authenticateToken, async (req, res) => {
+// ============================================
+// GET GIFTS ON A CONFESSION
+// ============================================
+
+router.get('/confession/:confessionId', authenticateToken, async (req, res) => {
   try {
     const { confessionId } = req.params;
-    const userId = req.user.id;
     
-    await query(
-      'DELETE FROM applied_gifts WHERE confession_id = $1 AND user_id = $2',
-      [confessionId, userId]
+    // Get all gifts
+    const result = await query(
+      `SELECT 
+        g.id,
+        g.gift_type,
+        g.gift_price,
+        g.message,
+        g.created_at,
+        u.username as sender_username,
+        u.user_number as sender_user_number,
+        u.is_premium as sender_is_premium
+       FROM confession_gifts g
+       JOIN users u ON g.sender_id = u.id
+       WHERE g.confession_id = $1
+       ORDER BY g.created_at DESC`,
+      [confessionId]
     );
+    
+    // Check if current user is confession owner or premium
+    const confessionResult = await query(
+      'SELECT user_id FROM confessions WHERE id = $1',
+      [confessionId]
+    );
+    
+    const userResult = await query(
+      'SELECT is_premium FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    
+    const isOwner = confessionResult.rows[0]?.user_id === req.user.id;
+    const isPremium = userResult.rows[0]?.is_premium;
+    
+    // Hide sender info if not owner and not premium
+    const gifts = result.rows.map(gift => {
+      if (!isOwner && !isPremium) {
+        return {
+          ...gift,
+          sender_username: 'Anonymous',
+          sender_user_number: null,
+          sender_is_premium: false
+        };
+      }
+      return gift;
+    });
+    
+    // Group by gift type
+    const giftCounts = {};
+    gifts.forEach(gift => {
+      if (!giftCounts[gift.gift_type]) {
+        giftCounts[gift.gift_type] = 0;
+      }
+      giftCounts[gift.gift_type]++;
+    });
     
     res.json({
       success: true,
-      message: 'Gift effect removed'
+      gifts,
+      gift_counts: giftCounts,
+      total_gifts: gifts.length,
+      can_see_senders: isOwner || isPremium
     });
     
   } catch (error) {
-    console.error('Remove gift error:', error);
-    res.status(500).json({ error: 'Failed to remove gift' });
+    console.error('Get gifts error:', error);
+    res.status(500).json({ error: 'Failed to get gifts' });
   }
 });
 
-// ADMIN: Get gift stats
-router.get('/admin/stats', authenticateToken, async (req, res) => {
+// ============================================
+// GET USER'S GIFT INVENTORY
+// ============================================
+
+router.get('/inventory', authenticateToken, async (req, res) => {
   try {
-    // Total gifts sent
-    const totalSent = await query(
-      'SELECT COUNT(*) as count, SUM(credits_spent) as total_credits FROM gifts_sent'
+    const userId = req.user.id;
+    
+    const result = await query(
+      `SELECT 
+        gift_type,
+        total_received,
+        unlocked_theme
+       FROM user_gift_inventory
+       WHERE user_id = $1`,
+      [userId]
     );
     
-    // Top senders
-    const topSenders = await query(
-      `SELECT 
-        u.username,
-        u.user_number,
-        COUNT(*) as gifts_sent,
-        SUM(gs.credits_spent) as credits_spent
-       FROM gifts_sent gs
-       JOIN users u ON gs.sender_id = u.id
-       GROUP BY u.id, u.username, u.user_number
-       ORDER BY credits_spent DESC
-       LIMIT 10`
-    );
+    // Format with progress
+    const inventory = result.rows.map(item => {
+      const giftInfo = GIFT_CATALOG[item.gift_type];
+      return {
+        gift_type: item.gift_type,
+        gift_name: giftInfo.name,
+        total_received: item.total_received,
+        needed_for_unlock: giftInfo.unlock_at,
+        remaining: Math.max(giftInfo.unlock_at - item.total_received, 0),
+        progress_percentage: Math.min((item.total_received / giftInfo.unlock_at) * 100, 100),
+        theme_unlocked: item.unlocked_theme,
+        theme_name: giftInfo.theme
+      };
+    });
     
-    // Top receivers
-    const topReceivers = await query(
-      `SELECT 
-        u.username,
-        u.user_number,
-        COUNT(*) as gifts_received,
-        SUM(gs.credits_spent) as credits_received
-       FROM gifts_sent gs
-       JOIN users u ON gs.receiver_id = u.id
-       GROUP BY u.id, u.username, u.user_number
-       ORDER BY credits_received DESC
-       LIMIT 10`
-    );
+    res.json({
+      success: true,
+      inventory
+    });
     
-    // Most popular gifts
-    const popularGifts = await query(
+  } catch (error) {
+    console.error('Get inventory error:', error);
+    res.status(500).json({ error: 'Failed to get inventory' });
+  }
+});
+
+// ============================================
+// GET USER'S UNLOCKED THEMES
+// ============================================
+
+router.get('/themes', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const result = await query(
       `SELECT 
-        gc.title,
-        gc.icon,
-        COUNT(*) as times_sent,
-        SUM(gs.credits_spent) as total_revenue
-       FROM gifts_sent gs
-       JOIN gift_catalog gc ON gs.gift_id = gc.id
-       GROUP BY gc.id, gc.title, gc.icon
-       ORDER BY times_sent DESC`
+        theme_name,
+        is_active,
+        unlocked_at
+       FROM user_active_themes
+       WHERE user_id = $1`,
+      [userId]
     );
     
     res.json({
       success: true,
-      stats: {
-        total_gifts_sent: parseInt(totalSent.rows[0].count),
-        total_revenue: parseInt(totalSent.rows[0].total_credits || 0),
-        top_senders: topSenders.rows,
-        top_receivers: topReceivers.rows,
-        popular_gifts: popularGifts.rows
-      }
+      themes: result.rows
     });
     
   } catch (error) {
-    console.error('Gift stats error:', error);
-    res.status(500).json({ error: 'Failed to get stats' });
+    console.error('Get themes error:', error);
+    res.status(500).json({ error: 'Failed to get themes' });
+  }
+});
+
+// ============================================
+// TOGGLE THEME ON/OFF
+// ============================================
+
+router.post('/themes/toggle', authenticateToken, async (req, res) => {
+  try {
+    const { theme_name, is_active } = req.body;
+    const userId = req.user.id;
+    
+    // Check if user has this theme
+    const themeResult = await query(
+      'SELECT theme_name FROM user_active_themes WHERE user_id = $1 AND theme_name = $2',
+      [userId, theme_name]
+    );
+    
+    if (themeResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Theme not unlocked' });
+    }
+    
+    // If activating, deactivate all other themes first (only one active at a time)
+    if (is_active) {
+      await query(
+        'UPDATE user_active_themes SET is_active = false WHERE user_id = $1',
+        [userId]
+      );
+    }
+    
+    // Toggle theme
+    await query(
+      `UPDATE user_active_themes 
+       SET is_active = $1 
+       WHERE user_id = $2 AND theme_name = $3`,
+      [is_active, userId, theme_name]
+    );
+    
+    res.json({
+      success: true,
+      message: is_active ? `${theme_name} theme activated!` : `${theme_name} theme deactivated`,
+      theme_name,
+      is_active
+    });
+    
+  } catch (error) {
+    console.error('Toggle theme error:', error);
+    res.status(500).json({ error: 'Failed to toggle theme' });
+  }
+});
+
+// ============================================
+// LEADERBOARD: MOST GIFTED CONFESSIONS
+// ============================================
+
+router.get('/leaderboard/confessions', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+        c.id,
+        c.content,
+        c.mood_zone,
+        u.username,
+        u.user_number,
+        COUNT(g.id) as gift_count,
+        SUM(g.gift_price) as total_value
+       FROM confessions c
+       JOIN confession_gifts g ON c.id = g.confession_id
+       JOIN users u ON c.user_id = u.id
+       WHERE c.status = 'approved'
+       GROUP BY c.id, c.content, c.mood_zone, u.username, u.user_number
+       ORDER BY gift_count DESC
+       LIMIT 10`
+    );
+    
+    res.json({
+      success: true,
+      leaderboard: result.rows
+    });
+    
+  } catch (error) {
+    console.error('Leaderboard error:', error);
+    res.status(500).json({ error: 'Failed to get leaderboard' });
+  }
+});
+
+// ============================================
+// LEADERBOARD: TOP GIFTERS
+// ============================================
+
+router.get('/leaderboard/gifters', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+        u.id,
+        u.username,
+        u.user_number,
+        COUNT(g.id) as total_gifts_sent,
+        SUM(g.gift_price) as credits_spent
+       FROM users u
+       JOIN confession_gifts g ON u.id = g.sender_id
+       GROUP BY u.id, u.username, u.user_number
+       ORDER BY total_gifts_sent DESC
+       LIMIT 10`
+    );
+    
+    res.json({
+      success: true,
+      leaderboard: result.rows
+    });
+    
+  } catch (error) {
+    console.error('Gifters leaderboard error:', error);
+    res.status(500).json({ error: 'Failed to get leaderboard' });
+  }
+});
+
+// ============================================
+// GET GIFT CATALOG (for frontend)
+// ============================================
+
+router.get('/catalog', async (req, res) => {
+  try {
+    // Convert catalog to array
+    const catalog = Object.entries(GIFT_CATALOG).map(([id, data]) => ({
+      id,
+      ...data
+    }));
+    
+    res.json({
+      success: true,
+      catalog
+    });
+    
+  } catch (error) {
+    console.error('Get catalog error:', error);
+    res.status(500).json({ error: 'Failed to get catalog' });
   }
 });
 
