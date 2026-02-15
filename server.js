@@ -9,7 +9,9 @@ import { Server } from 'socket.io';
 import rateLimit from 'express-rate-limit';
 import passport from './middleware/auth.js';
 import webhookRoutes from './routes/webhooks.js';
-
+import { confessionRateLimit } from './middleware/rateLimit.js';
+import { trackRegistrationIP, trackActionIP } from './middleware/ipTracking.js';
+import giftsRouter from './routes/gifts.js';
 // Import ALL routes
 import authRoutes from './routes/auth.js';
 import confessionRoutes from './routes/confessions.js';
@@ -108,6 +110,7 @@ app.use('/api/gifts', giftsRouter);  // ADD THIS
 app.use('/api/polls', pollsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/gifts', giftsRouter);
 
 // Root route
 app.get('/', (req, res) => {
