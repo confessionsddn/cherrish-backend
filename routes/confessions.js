@@ -4,7 +4,8 @@ import { authenticateToken, optionalAuth } from '../middleware/auth.js';
 import { query } from '../config/database.js';
 import { uploadAudio } from '../config/cloudinary.js';
 import multer from 'multer';
-
+import { confessionRateLimit } from '../middleware/rateLimit.js';
+import { trackActionIP } from '../middleware/ipTracking.js';
 const router = express.Router();
 
 // Configure multer for audio uploads
@@ -265,7 +266,8 @@ router.get('/:id/reactors', authenticateToken, async (req, res) => {
 });
 // Create new confession (with premium support)
 // Create new confession (with premium support)
-router.post('/', authenticateToken, upload.single('audio'), async (req, res) => {
+router.post('/', authenticateToken,  confessionRateLimit,  // NEW!
+  trackActionIP('post_confession'), upload.single('audio'), async (req, res) => {
   try {
     const { content, mood_zone, voice_duration } = req.body;
     const userId = req.user.id;
