@@ -1,4 +1,4 @@
-//backend/routes/payments.js - FIXED USER ID COMPARISON
+//backend/routes/payments.js - COMPLETE VERSION
 import express from 'express';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -13,12 +13,12 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// UPDATED CREDIT PACKAGES - Match frontend exactly
+// Credit packages
 const CREDIT_PACKAGES = {
-  starter: { credits: 70, price: 2900, name: 'Starter', bonus: 0 },      // ₹29
-  popular: { credits: 200, price: 6900, name: 'Popular', bonus: 25 },   // ₹69
-  best: { credits: 400, price: 13900, name: 'Best Value', bonus: 50 },  // ₹139
-  elite: { credits: 800, price: 24900, name: 'Elite', bonus: 100 }      // ₹249
+  starter: { credits: 70, price: 2900, name: 'Starter', bonus: 0 },
+  popular: { credits: 200, price: 6900, name: 'Popular', bonus: 25 },
+  best: { credits: 400, price: 13900, name: 'Best Value', bonus: 50 },
+  elite: { credits: 800, price: 24900, name: 'Elite', bonus: 100 }
 };
 
 // Ensure idempotency storage exists
@@ -34,6 +34,10 @@ await query(`
   )
 `);
 
+// ==========================================
+// CREDIT PURCHASE ROUTES
+// ==========================================
+
 // Create order for credit purchase
 router.post('/create-order', authenticateToken, async (req, res) => {
   try {
@@ -45,16 +49,14 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 
     const pkg = CREDIT_PACKAGES[package_type];
     const totalCredits = pkg.credits + pkg.bonus;
-
-    // Shortened receipt to stay under 40 chars
     const receipt = `cr_${req.user.id}_${Date.now()}`.substring(0, 40);
 
     const options = {
-      amount: pkg.price, // Already in paise
+      amount: pkg.price,
       currency: 'INR',
       receipt: receipt,
       notes: {
-        user_id: String(req.user.id),  // ✅ CONVERT TO STRING
+        user_id: String(req.user.id),
         package_type: package_type,
         credits: totalCredits.toString(),
         base_credits: pkg.credits.toString(),
@@ -63,8 +65,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
     };
 
     const order = await razorpay.orders.create(options);
-
-    console.log('💰 Order created:', order.id, 'Amount:', pkg.price / 100, 'User:', req.user.id);
+    console.log('💰 Order created:', order.id, 'Amount:', pkg.price / 100);
 
     res.json({
       success: true,
@@ -82,7 +83,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
   }
 });
 
-// Verify payment
+// Verify credit payment
 router.post('/verify-payment', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -111,7 +112,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
 
     console.log('✅ Signature verified');
 
-    // Fetch order and payment details from Razorpay
+    // Fetch order and payment details
     const [order, payment] = await Promise.all([
       razorpay.orders.fetch(razorpay_order_id),
       razorpay.payments.fetch(razorpay_payment_id)
@@ -119,12 +120,11 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
 
     console.log('📦 Order details:', {
       status: payment.status,
-      amount: payment.amount,
-      order_notes: order.notes
+      amount: payment.amount
     });
 
     if (payment.status !== 'captured') {
-      console.error('❌ Payment not captured:', payment.status);
+      console.error('❌ Payment not captured');
       return res.status(400).json({ error: 'Payment not captured' });
     }
 
@@ -133,7 +133,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    // ✅ FIXED: Compare user IDs as strings
+    // Verify user ID
     const orderUserId = String(order.notes?.user_id || '');
     const currentUserId = String(req.user.id);
 
@@ -144,13 +144,13 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
     });
 
     if (!orderUserId || orderUserId !== currentUserId) {
-      console.error('❌ User ID mismatch:', { orderUserId, currentUserId });
+      console.error('❌ User ID mismatch');
       return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
     const credits = parseInt(order.notes.credits);
     if (!Number.isInteger(credits) || credits <= 0) {
-      console.error('❌ Invalid credits:', credits);
+      console.error('❌ Invalid credits');
       return res.status(400).json({ error: 'Invalid credits in order metadata' });
     }
 
@@ -173,7 +173,6 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
         await client.query('ROLLBACK');
         console.log('⚠️ Payment already processed');
         
-        // Get current credits anyway
         const userResult = await query(
           'SELECT credits FROM users WHERE id = $1',
           [req.user.id]
@@ -188,7 +187,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
         });
       }
 
-      // Add credits to user
+      // Add credits
       const updateResult = await client.query(
         'UPDATE users SET credits = credits + $1 WHERE id = $2 RETURNING credits',
         [credits, req.user.id]
@@ -205,7 +204,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       
       const newCredits = updateResult.rows[0].credits;
       
-      console.log('✅ Credits added successfully:', {
+      console.log('✅ Credits added:', {
         added: credits,
         new_total: newCredits,
         user_id: req.user.id
@@ -235,23 +234,26 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
   }
 });
 
+// ==========================================
+// PREMIUM SUBSCRIPTION ROUTES
+// ==========================================
+
 // Create premium subscription
 router.post('/create-subscription', authenticateToken, async (req, res) => {
   try {
     const receipt = `pm_${req.user.id}_${Date.now()}`.substring(0, 40);
 
     const options = {
-      amount: 9900, // ₹99 in paise
+      amount: 9900, // ₹99
       currency: 'INR',
       receipt: receipt,
       notes: {
-        user_id: String(req.user.id),  // ✅ CONVERT TO STRING
+        user_id: String(req.user.id),
         type: 'premium_subscription'
       }
     };
 
     const order = await razorpay.orders.create(options);
-
     console.log('👑 Premium order created:', order.id);
 
     res.json({
@@ -273,7 +275,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
-    console.log('👑 Verifying premium subscription:', {
+    console.log('👑 Verifying premium:', {
       order_id: razorpay_order_id,
       payment_id: razorpay_payment_id,
       user_id: req.user.id
@@ -309,7 +311,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Payment/order mismatch' });
     }
 
-    // ✅ FIXED: Compare user IDs as strings
+    // Verify user ID
     const orderUserId = String(order.notes?.user_id || '');
     const currentUserId = String(req.user.id);
 
@@ -369,7 +371,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
         [req.user.id]
       );
 
-      // Log bonus credits transaction
+      // Log bonus credits
       await client.query(
         `INSERT INTO credit_transactions (user_id, amount, type, description)
          VALUES ($1, 150, 'earned', 'Premium subscription bonus')`,
@@ -377,8 +379,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       );
 
       await client.query('COMMIT');
-      
-      console.log('✅ Premium activated for user:', req.user.id);
+      console.log('✅ Premium activated:', req.user.id);
 
     } catch (dbError) {
       await client.query('ROLLBACK');
@@ -403,8 +404,9 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
   }
 });
 
-
-// ===== ADD THESE UNBAN ROUTES =====
+// ==========================================
+// UNBAN PAYMENT ROUTES
+// ==========================================
 
 // Create unban order
 router.post('/create-unban-order', authenticateToken, async (req, res) => {
@@ -437,7 +439,7 @@ router.post('/create-unban-order', authenticateToken, async (req, res) => {
     };
 
     const order = await razorpay.orders.create(options);
-    console.log('🚫 Unban order:', order.id);
+    console.log('🚫 Unban order created:', order.id, 'Amount:', amount / 100);
 
     res.json({
       success: true,
@@ -449,7 +451,7 @@ router.post('/create-unban-order', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Create unban order error:', error);
-    res.status(500).json({ error: 'Failed to create unban order' });
+    res.status(500).json({ error: 'Failed to create unban order', details: error.message });
   }
 });
 
@@ -457,6 +459,12 @@ router.post('/create-unban-order', authenticateToken, async (req, res) => {
 router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    console.log('🚫 Verifying unban payment:', {
+      order_id: razorpay_order_id,
+      payment_id: razorpay_payment_id,
+      user_id: req.user.id
+    });
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ error: 'Missing payment verification fields' });
@@ -470,29 +478,42 @@ router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
       .digest('hex');
 
     if (razorpay_signature !== expectedSign) {
+      console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
+    console.log('✅ Signature verified');
+
+    // Fetch order and payment details
     const [order, payment] = await Promise.all([
       razorpay.orders.fetch(razorpay_order_id),
       razorpay.payments.fetch(razorpay_payment_id)
     ]);
 
     if (payment.status !== 'captured') {
+      console.error('❌ Payment not captured');
       return res.status(400).json({ error: 'Payment not captured' });
     }
 
+    if (payment.order_id !== razorpay_order_id) {
+      console.error('❌ Payment/order mismatch');
+      return res.status(400).json({ error: 'Payment/order mismatch' });
+    }
+
+    // Verify user ID
     const orderUserId = String(order.notes?.user_id || '');
     const currentUserId = String(req.user.id);
 
     if (!orderUserId || orderUserId !== currentUserId) {
-      return res.status(403).json({ error: 'Order does not belong to user' });
+      console.error('❌ User ID mismatch');
+      return res.status(403).json({ error: 'Order does not belong to authenticated user' });
     }
 
     const client = await getClient();
     try {
       await client.query('BEGIN');
 
+      // Idempotency check
       const insertReceipt = await client.query(
         `INSERT INTO payment_receipts (payment_id, order_id, user_id, payment_type, amount)
          VALUES ($1, $2, $3, 'unban', $4)
@@ -503,7 +524,12 @@ router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
 
       if (insertReceipt.rows.length === 0) {
         await client.query('ROLLBACK');
-        return res.json({ success: true, message: 'Already processed' });
+        console.log('⚠️ Unban payment already processed');
+        return res.json({
+          success: true,
+          message: 'Payment already processed',
+          already_processed: true
+        });
       }
 
       // Unban user
@@ -515,20 +541,26 @@ router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
       await client.query('COMMIT');
       console.log('✅ User unbanned:', req.user.id);
 
-      res.json({ success: true, message: 'Account unbanned!' });
+      res.json({
+        success: true,
+        message: 'Account unbanned successfully!'
+      });
 
     } catch (dbError) {
       await client.query('ROLLBACK');
+      console.error('❌ Database error:', dbError);
       throw dbError;
     } finally {
       client.release();
     }
 
   } catch (error) {
-    console.error('❌ Verify unban error:', error);
-    res.status(500).json({ error: 'Verification failed' });
+    console.error('❌ Verify unban payment error:', error);
+    res.status(500).json({ 
+      error: 'Verification failed',
+      details: error.message 
+    });
   }
 });
 
-export default router;
 export default router;
