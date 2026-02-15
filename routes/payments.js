@@ -403,4 +403,132 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
   }
 });
 
+
+// ===== ADD THESE UNBAN ROUTES =====
+
+// Create unban order
+router.post('/create-unban-order', authenticateToken, async (req, res) => {
+  try {
+    const { ban_duration } = req.body;
+    
+    const validDurations = ['3', '7', 'permanent'];
+    if (!validDurations.includes(ban_duration)) {
+      return res.status(400).json({ error: 'Invalid ban duration' });
+    }
+
+    const prices = {
+      '3': 3000,      // ₹30
+      '7': 7000,      // ₹70
+      'permanent': 30000  // ₹300
+    };
+
+    const amount = prices[ban_duration];
+    const receipt = `unban_${req.user.id}_${Date.now()}`.substring(0, 40);
+
+    const options = {
+      amount: amount,
+      currency: 'INR',
+      receipt: receipt,
+      notes: {
+        user_id: String(req.user.id),
+        type: 'unban',
+        ban_duration: ban_duration
+      }
+    };
+
+    const order = await razorpay.orders.create(options);
+    console.log('🚫 Unban order:', order.id);
+
+    res.json({
+      success: true,
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      key: process.env.RAZORPAY_KEY_ID
+    });
+
+  } catch (error) {
+    console.error('❌ Create unban order error:', error);
+    res.status(500).json({ error: 'Failed to create unban order' });
+  }
+});
+
+// Verify unban payment
+router.post('/verify-unban-payment', authenticateToken, async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing payment verification fields' });
+    }
+
+    // Verify signature
+    const sign = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(sign.toString())
+      .digest('hex');
+
+    if (razorpay_signature !== expectedSign) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    const [order, payment] = await Promise.all([
+      razorpay.orders.fetch(razorpay_order_id),
+      razorpay.payments.fetch(razorpay_payment_id)
+    ]);
+
+    if (payment.status !== 'captured') {
+      return res.status(400).json({ error: 'Payment not captured' });
+    }
+
+    const orderUserId = String(order.notes?.user_id || '');
+    const currentUserId = String(req.user.id);
+
+    if (!orderUserId || orderUserId !== currentUserId) {
+      return res.status(403).json({ error: 'Order does not belong to user' });
+    }
+
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+
+      const insertReceipt = await client.query(
+        `INSERT INTO payment_receipts (payment_id, order_id, user_id, payment_type, amount)
+         VALUES ($1, $2, $3, 'unban', $4)
+         ON CONFLICT (payment_id) DO NOTHING
+         RETURNING id`,
+        [razorpay_payment_id, razorpay_order_id, req.user.id, payment.amount]
+      );
+
+      if (insertReceipt.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.json({ success: true, message: 'Already processed' });
+      }
+
+      // Unban user
+      await client.query(
+        'UPDATE users SET is_banned = false, ban_until = NULL WHERE id = $1',
+        [req.user.id]
+      );
+
+      await client.query('COMMIT');
+      console.log('✅ User unbanned:', req.user.id);
+
+      res.json({ success: true, message: 'Account unbanned!' });
+
+    } catch (dbError) {
+      await client.query('ROLLBACK');
+      throw dbError;
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error('❌ Verify unban error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+export default router;
 export default router;
