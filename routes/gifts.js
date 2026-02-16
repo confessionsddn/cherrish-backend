@@ -2,6 +2,7 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
 import { query, getClient } from '../config/database.js';
+import { notifyGift } from './notifications.js';
 
 const router = express.Router();
 
@@ -134,7 +135,8 @@ router.post('/send', authenticateToken, async (req, res) => {
       }
       
       await client.query('COMMIT');
-      
+      await notifyGift(confession_id, senderId, gift_type, gift.name);
+
       console.log(`🎁 Gift sent: ${gift.name} from ${senderId} to ${recipientId}`);
       
       // Create notification (we'll implement OneSignal in next batch)
