@@ -4,7 +4,7 @@ import { query } from '../config/database.js';
 // ============================================
 // IP TRACKING MIDDLEWARE
 // Tracks IP addresses for security and analytics
-// ============================================
+// =============================================
 
 // Extract IP address from request
 export const getClientIP = (req) => {
