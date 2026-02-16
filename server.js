@@ -12,6 +12,8 @@ import webhookRoutes from './routes/webhooks.js';
 import { confessionRateLimit } from './middleware/rateLimit.js';
 import { trackRegistrationIP, trackActionIP } from './middleware/ipTracking.js';
 import giftsRouter from './routes/gifts.js';
+import notificationsRouter from './routes/notifications.js';
+
 // Import ALL routes
 import authRoutes from './routes/auth.js';
 import confessionRoutes from './routes/confessions.js';
@@ -21,7 +23,6 @@ import visibilityRouter from './routes/visibility.js';
 import accessRequestRoutes from './routes/access-requests.js';
 import adminRoutes from './routes/admin.js';
 import adminMessagesRouter from './routes/admin-messages.js';
-import giftsRouter from './routes/gifts.js';
 import pollsRoutes from './routes/polls.js';
 import messagesRoutes from './routes/messages.js';
 
@@ -106,11 +107,12 @@ app.use('/api/access-requests', accessRequestRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/visibility', visibilityRouter);
 app.use('/api/admin-messages', adminMessagesRouter);
-app.use('/api/gifts', giftsRouter);  // ADD THIS
+app.use('/api/gifts', giftsRouter);
 app.use('/api/polls', pollsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/webhooks', webhookRoutes);
-app.use('/api/gifts', giftsRouter);
+app.use('/api/notifications', notificationsRouter);
+
 
 // Root route
 app.get('/', (req, res) => {
