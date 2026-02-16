@@ -13,7 +13,8 @@ import { confessionRateLimit } from './middleware/rateLimit.js';
 import { trackRegistrationIP, trackActionIP } from './middleware/ipTracking.js';
 import giftsRouter from './routes/gifts.js';
 import notificationsRouter from './routes/notifications.js';
-
+import cron from 'node-cron';
+import { processNotificationQueue } from './services/oneSignalService.js';
 // Import ALL routes
 import authRoutes from './routes/auth.js';
 import confessionRoutes from './routes/confessions.js';
@@ -257,8 +258,7 @@ process.on('SIGTERM', () => {
 // ============================================
 // NOTIFICATION CRON JOBS
 // ============================================
-import cron from 'node-cron';
-import { processNotificationQueue } from './services/oneSignalService.js';
+
 
 // Process notification queue every 2 minutes
 cron.schedule('*/2 * * * *', async () => {
