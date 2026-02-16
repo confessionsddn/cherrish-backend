@@ -254,4 +254,22 @@ process.on('SIGTERM', () => {
   });
 });
 
+// ============================================
+// NOTIFICATION CRON JOBS
+// ============================================
+import cron from 'node-cron';
+import { processNotificationQueue } from './services/oneSignalService.js';
+
+// Process notification queue every 2 minutes
+cron.schedule('*/2 * * * *', async () => {
+  console.log('⏰ Processing notification queue...');
+  try {
+    await processNotificationQueue();
+  } catch (error) {
+    console.error('❌ Cron job error:', error);
+  }
+});
+
+console.log('✅ Notification cron job started (runs every 2 minutes)');
+
 export default app;
