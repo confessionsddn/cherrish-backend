@@ -231,7 +231,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
          VALUES ($1, $2, 'purchased', $3)`,
         [req.user.id, credits, `Purchased ${order.notes.package_type} - ₹${order.amount / 100}`]
       );
-
+      await logActivity(req.user.id, 'buy_credits', { credits_added: credits });
       await client.query('COMMIT');
       
       const newCredits = updateResult.rows[0].credits;
@@ -402,7 +402,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
         'UPDATE users SET is_premium = true, credits = credits + 150 WHERE id = $1',
         [req.user.id]
       );
-
+await logActivity(req.user.id, 'buy_premium', { premium_until: endDate });
       // Log bonus credits
       await client.query(
         `INSERT INTO credit_transactions (user_id, amount, type, description)
