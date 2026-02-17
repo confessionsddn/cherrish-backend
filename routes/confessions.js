@@ -4,6 +4,8 @@ import { authenticateToken, optionalAuth } from '../middleware/auth.js';
 import { query } from '../config/database.js';
 import { uploadAudio } from '../config/cloudinary.js';
 import multer from 'multer';
+import { logConfessionPosted } from '../services/activityLogger.js';
+
 import { confessionRateLimit } from '../middleware/rateLimit.js';
 import { trackActionIP } from '../middleware/ipTracking.js';
 const router = express.Router();
