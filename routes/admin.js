@@ -656,4 +656,286 @@ router.get('/logs', async (req, res) => {
   }
 });
 
+// ============================================================
+// ADD THESE ROUTES TO backend/routes/admin.js
+// (Add after your existing routes, before export default router)
+// ============================================================
+
+// ============================================================
+// USER ACTIVITY LOGS (Admin view - NOT admin action logs)
+// Tracks: post_confession, reply, bought_credits, bought_premium
+// ============================================================
+router.get('/user-activity-logs', async (req, res) => {
+  try {
+    const { limit = 100, user_id } = req.query;
+
+    let queryText = `
+      SELECT 
+        ual.id,
+        ual.user_id,
+        ual.action_type,
+        ual.credits_change,
+        ual.meta,
+        ual.created_at,
+        u.username,
+        u.user_number,
+        u.email
+      FROM user_activity_log ual
+      JOIN users u ON ual.user_id = u.id
+      WHERE ual.action_type IN ('post_confession', 'reply', 'bought_credits', 'bought_premium', 'banned', 'unbanned')
+    `;
+
+    const params = [];
+
+    if (user_id) {
+      params.push(user_id);
+      queryText += ` AND ual.user_id = $${params.length}`;
+    }
+
+    params.push(parseInt(limit));
+    queryText += ` ORDER BY ual.created_at DESC LIMIT $${params.length}`;
+
+    const result = await query(queryText, params);
+
+    res.json({
+      success: true,
+      logs: result.rows
+    });
+
+  } catch (error) {
+    console.error('Get user activity logs error:', error);
+    res.status(500).json({ error: 'Failed to get activity logs' });
+  }
+});
+
+// ============================================================
+// TOP BUYERS ANALYTICS
+// ============================================================
+router.get('/analytics/top-buyers', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+        u.id as user_id,
+        u.username,
+        u.user_number,
+        u.is_premium,
+        COUNT(ct.id) as purchase_count,
+        COALESCE(SUM(ct.amount), 0) as total_credits_bought,
+        COALESCE(SUM(ct.rupees_paid), 0) as total_spent,
+        MAX(ct.created_at) as last_purchase
+       FROM users u
+       JOIN credit_transactions ct ON u.id = ct.user_id
+       WHERE ct.type = 'purchased'
+       GROUP BY u.id
+       ORDER BY total_spent DESC
+       LIMIT 10`
+    );
+
+    res.json({
+      success: true,
+      buyers: result.rows
+    });
+
+  } catch (error) {
+    console.error('Get top buyers error:', error);
+    // If rupees_paid column doesn't exist yet, fallback
+    try {
+      const fallback = await query(
+        `SELECT 
+          u.id as user_id,
+          u.username,
+          u.user_number,
+          u.is_premium,
+          COUNT(ct.id) as purchase_count,
+          COALESCE(SUM(ct.amount), 0) as total_credits_bought,
+          0 as total_spent,
+          MAX(ct.created_at) as last_purchase
+         FROM users u
+         JOIN credit_transactions ct ON u.id = ct.user_id
+         WHERE ct.type = 'purchased'
+         GROUP BY u.id
+         ORDER BY total_credits_bought DESC
+         LIMIT 10`
+      );
+      res.json({ success: true, buyers: fallback.rows });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to get top buyers' });
+    }
+  }
+});
+
+
+// ============================================================
+// USER STREAK TRACKING - ADMIN VIEW ONLY
+// ⚠️ PRECAUTIONS BEFORE UNCOMMENTING:
+// 1. Run this SQL first in Supabase:
+//    ALTER TABLE users ADD COLUMN IF NOT EXISTS current_streak INTEGER DEFAULT 0;
+//    ALTER TABLE users ADD COLUMN IF NOT EXISTS longest_streak INTEGER DEFAULT 0;
+//    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_date DATE;
+//    CREATE TABLE IF NOT EXISTS user_streaks (
+//      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+//      current_streak INTEGER DEFAULT 0,
+//      longest_streak INTEGER DEFAULT 0,
+//      last_active_date DATE DEFAULT CURRENT_DATE,
+//      streak_started_date DATE DEFAULT CURRENT_DATE,
+//      updated_at TIMESTAMP DEFAULT NOW()
+//    );
+// 2. Add streak update call in confessions.js POST route:
+//    await updateUserStreak(userId);
+// 3. Test with 1-2 users before going live
+// 4. Streak = consecutive days user posted at least 1 confession
+// ============================================================
+
+/*
+// UNCOMMENT WHEN READY TO DEPLOY STREAKS:
+
+export const updateUserStreak = async (userId) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    const existing = await query(
+      'SELECT * FROM user_streaks WHERE user_id = $1',
+      [userId]
+    );
+
+    if (existing.rows.length === 0) {
+      // First ever activity
+      await query(
+        `INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active_date, streak_started_date)
+         VALUES ($1, 1, 1, $2, $2)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId, today]
+      );
+      return;
+    }
+
+    const streak = existing.rows[0];
+    const lastDate = new Date(streak.last_active_date);
+    const todayDate = new Date(today);
+    const diffDays = Math.floor((todayDate - lastDate) / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      // Already counted today
+      return;
+    } else if (diffDays === 1) {
+      // Consecutive day - increment streak
+      const newStreak = streak.current_streak + 1;
+      const newLongest = Math.max(newStreak, streak.longest_streak);
+      await query(
+        `UPDATE user_streaks 
+         SET current_streak = $1, longest_streak = $2, last_active_date = $3, updated_at = NOW()
+         WHERE user_id = $4`,
+        [newStreak, newLongest, today, userId]
+      );
+    } else {
+      // Streak broken - reset to 1
+      await query(
+        `UPDATE user_streaks 
+         SET current_streak = 1, last_active_date = $1, streak_started_date = $1, updated_at = NOW()
+         WHERE user_id = $2`,
+        [today, userId]
+      );
+    }
+  } catch (error) {
+    console.error('Update streak error:', error);
+    // Don't throw - streak is non-critical
+  }
+};
+
+// Admin: Get top streaks
+router.get('/analytics/streaks', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+        u.username,
+        u.user_number,
+        u.is_premium,
+        s.current_streak,
+        s.longest_streak,
+        s.last_active_date,
+        s.streak_started_date
+       FROM user_streaks s
+       JOIN users u ON s.user_id = u.id
+       ORDER BY s.current_streak DESC
+       LIMIT 20`
+    );
+    res.json({ success: true, streaks: result.rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get streaks' });
+  }
+});
+*/
+
+
+// ============================================================
+// SEARCH CONFESSIONS - ADMIN VIEW (FUTURE: release to users)
+// ⚠️ PRECAUTIONS BEFORE UNCOMMENTING FOR USERS:
+// 1. Add this index in Supabase first (prevents slow queries):
+//    CREATE INDEX IF NOT EXISTS idx_confessions_content_search 
+//    ON confessions USING gin(to_tsvector('english', content));
+// 2. Rate limit search: max 20 searches per minute per user
+//    (search is expensive - without index it scans full table)
+// 3. Add minimum 3 character validation on frontend
+// 4. Test with 100+ confessions before enabling for all users
+// 5. Consider adding search_count column to track popular queries
+// ============================================================
+
+/*
+// UNCOMMENT WHEN READY TO RELEASE SEARCH:
+
+router.get('/search-confessions', async (req, res) => {
+  try {
+    const { q = '', mood_zone = '', limit = 20, offset = 0 } = req.query;
+
+    if (q.trim().length < 3) {
+      return res.status(400).json({ error: 'Search query must be at least 3 characters' });
+    }
+
+    let queryText = `
+      SELECT 
+        c.id,
+        c.content,
+        c.mood_zone,
+        c.status,
+        c.created_at,
+        c.heart_count,
+        c.like_count,
+        u.username,
+        u.user_number,
+        ts_rank(to_tsvector('english', c.content), plainto_tsquery('english', $1)) as rank
+      FROM confessions c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.status = 'approved'
+        AND to_tsvector('english', c.content) @@ plainto_tsquery('english', $1)
+    `;
+
+    const params = [q.trim()];
+    let paramIndex = 2;
+
+    if (mood_zone) {
+      queryText += ` AND c.mood_zone = $${paramIndex}`;
+      params.push(mood_zone);
+      paramIndex++;
+    }
+
+    queryText += ` ORDER BY rank DESC, c.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await query(queryText, params);
+
+    res.json({
+      success: true,
+      results: result.rows,
+      query: q,
+      count: result.rows.length
+    });
+
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+*/
+
+
 export default router;
