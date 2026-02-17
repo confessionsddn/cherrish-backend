@@ -2,7 +2,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { notifyReply } from './notifications.js';
-
+import { logManualActivity } from '../middleware/activity-logger.js';
 const router = express.Router();
 
 // Get all replies for a confession
@@ -68,8 +68,7 @@ router.post('/', authenticateToken, async (req, res) => {
       [confession_id, req.user.id, content.trim()]
     );
     await notifyReply(confession_id, req.user.id, content);
-await logActivity(req.user.id, 'post_reply', { confession_id });
-    // Increment confession replies count
+logManualActivity(req.user.id, 'post_reply', { confession_id }, confession_id, 0);    // Increment confession replies count
     await query(
       'UPDATE confessions SET replies_count = replies_count + 1 WHERE id = $1',
       [confession_id]
