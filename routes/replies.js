@@ -68,7 +68,7 @@ router.post('/', authenticateToken, async (req, res) => {
       [confession_id, req.user.id, content.trim()]
     );
     await notifyReply(confession_id, req.user.id, content);
-
+await logActivity(req.user.id, 'post_reply', { confession_id });
     // Increment confession replies count
     await query(
       'UPDATE confessions SET replies_count = replies_count + 1 WHERE id = $1',
