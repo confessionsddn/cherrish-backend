@@ -4,7 +4,7 @@ import { authenticateToken, optionalAuth } from '../middleware/auth.js';
 import { query } from '../config/database.js';
 import { uploadAudio } from '../config/cloudinary.js';
 import multer from 'multer';
-import { logConfessionPosted } from '../services/activityLogger.js';
+// import { logConfessionPosted } from '../services/activityLogger.js';
 
 import { confessionRateLimit } from '../middleware/rateLimit.js';
 import { trackActionIP } from '../middleware/ipTracking.js';
@@ -171,7 +171,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
     }
     
     const confession = result.rows[0];
-    
+    await logActivity(userId, 'post_confession', { mood_zone, confession_id: confession.id });
     res.json({
       confession: {
         ...confession,
