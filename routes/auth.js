@@ -229,8 +229,12 @@ router.get('/google',
 );
 
 // Google OAuth callback
+// Google OAuth callback - FIXED VERSION
 router.get('/google/callback', (req, res, next) => {
-  passport.authenticate('google', { session: false }, async (err, user) => {
+  passport.authenticate('google', { 
+    session: false,
+    failureRedirect: `${process.env.FRONTEND_URL}/?error=auth_failed`
+  }, async (err, user, info) => {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     
     try {
@@ -239,43 +243,33 @@ router.get('/google/callback', (req, res, next) => {
         return res.redirect(`${frontendUrl}/?error=auth_failed`);
       }
       
-      // User doesn't exist - needs registration with access code
       if (!user) {
-        console.log('⚠️ New user - redirecting to access code page');
+        console.log('⚠️ New user - needs access code');
         
-        // Get OAuth profile from request
-        const profile = req.oauthProfile;
+        // Get OAuth data from session/request
+        const profile = req.user || info?.profile;
         
-        if (!profile || !profile.email || !profile.googleId) {
-          console.error('❌ No OAuth profile data');
-          return res.redirect(`${frontendUrl}/?error=oauth_failed`);
+        if (!profile) {
+          return res.redirect(`${frontendUrl}/?error=no_profile`);
         }
         
-        console.log('📧 Profile data:', profile);
-        
-        // Pass email and googleId via URL parameters (base64 encoded for safety)
         const dataString = JSON.stringify({
-          email: profile.email,
-          googleId: profile.googleId
+          email: profile.email || profile.emails?.[0]?.value,
+          googleId: profile.id || profile.googleId
         });
         const encodedData = Buffer.from(dataString).toString('base64');
         
         return res.redirect(`${frontendUrl}/access-code?data=${encodedData}`);
       }
       
-      // User exists - generate token and login
-      console.log('✅ User logged in:', user.email, user.username);
-      
-      // Log login activity
-      if (logManualActivity) {
-        await logManualActivity(user.id, 'login', { method: 'google_oauth' });
-      }
+      // User exists - login
+      console.log('✅ User logged in:', user.email);
       
       const token = generateToken(user);
       return res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
       
     } catch (error) {
-      console.error('❌ OAuth callback error:', error);
+      console.error('❌ Callback error:', error);
       return res.redirect(`${frontendUrl}/?error=auth_failed`);
     }
   })(req, res, next);
