@@ -937,5 +937,241 @@ router.get('/search-confessions', async (req, res) => {
 });
 */
 
+// ADD THESE ROUTES TO YOUR backend/routes/admin.js
+
+// ============================================
+// ADJUST USER CREDITS (ADMIN)
+// ============================================
+router.post('/users/adjust-credits', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userIdentifier, amount, reason } = req.body;
+    
+    if (!userIdentifier || amount === undefined) {
+      return res.status(400).json({ error: 'User identifier and amount required' });
+    }
+    
+    // Find user by email, username, or user_number
+    let userQuery = `
+      SELECT id, username, email, user_number, credits 
+      FROM users 
+      WHERE email = $1 OR username = $1 OR user_number = $2
+      LIMIT 1
+    `;
+    
+    const userNumberMatch = userIdentifier.match(/^#?(\d+)$/);
+    const userNumber = userNumberMatch ? parseInt(userNumberMatch[1]) : null;
+    
+    const userResult = await query(userQuery, [userIdentifier, userNumber]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userResult.rows[0];
+    const newBalance = user.credits + amount;
+    
+    if (newBalance < 0) {
+      return res.status(400).json({ 
+        error: `Cannot remove ${Math.abs(amount)} credits. User only has ${user.credits} credits.`,
+        current_balance: user.credits
+      });
+    }
+    
+    // Update credits
+    await query(
+      'UPDATE users SET credits = credits + $1 WHERE id = $2',
+      [amount, user.id]
+    );
+    
+    // Log transaction
+    await query(
+      `INSERT INTO credit_transactions (user_id, amount, type, description)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        user.id,
+        amount,
+        amount > 0 ? 'admin_grant' : 'admin_deduct',
+        reason || `Admin adjustment by ${req.user.email}`
+      ]
+    );
+    
+    console.log(`💰 Admin adjusted credits: ${user.username} (${amount > 0 ? '+' : ''}${amount})`);
+    
+    res.json({
+      success: true,
+      message: `${amount > 0 ? 'Added' : 'Removed'} ${Math.abs(amount)} credits`,
+      user: {
+        username: user.username,
+        email: user.email,
+        user_number: user.user_number
+      },
+      old_balance: user.credits,
+      adjustment: amount,
+      new_balance: newBalance
+    });
+    
+  } catch (error) {
+    console.error('Adjust credits error:', error);
+    res.status(500).json({ error: 'Failed to adjust credits' });
+  }
+});
+
+// ============================================
+// GRANT PREMIUM (ADMIN)
+// ============================================
+router.post('/users/grant-premium', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userIdentifier, days } = req.body;
+    
+    if (!userIdentifier || !days) {
+      return res.status(400).json({ error: 'User identifier and days required' });
+    }
+    
+    if (days < 1 || days > 3650) {
+      return res.status(400).json({ error: 'Days must be between 1 and 3650 (10 years)' });
+    }
+    
+    // Find user
+    let userQuery = `
+      SELECT id, username, email, user_number, is_premium 
+      FROM users 
+      WHERE email = $1 OR username = $1 OR user_number = $2
+      LIMIT 1
+    `;
+    
+    const userNumberMatch = userIdentifier.match(/^#?(\d+)$/);
+    const userNumber = userNumberMatch ? parseInt(userNumberMatch[1]) : null;
+    
+    const userResult = await query(userQuery, [userIdentifier, userNumber]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userResult.rows[0];
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + days);
+    
+    // Check if already has premium subscription
+    const existingSub = await query(
+      `SELECT id, end_date, is_active FROM premium_subscriptions 
+       WHERE user_id = $1 AND is_active = true
+       ORDER BY end_date DESC LIMIT 1`,
+      [user.id]
+    );
+    
+    if (existingSub.rows.length > 0) {
+      // Extend existing subscription
+      await query(
+        `UPDATE premium_subscriptions 
+         SET end_date = $1, 
+             spotlight_uses_remaining = 10,
+             daily_edit_used = false,
+             daily_voice_used = false,
+             last_reset_date = CURRENT_DATE
+         WHERE user_id = $2 AND is_active = true`,
+        [endDate, user.id]
+      );
+    } else {
+      // Create new subscription
+      await query(
+        `INSERT INTO premium_subscriptions (
+          user_id, start_date, end_date, is_active,
+          spotlight_uses_remaining, boost_uses_remaining,
+          daily_edit_used, daily_voice_used, last_reset_date
+        ) VALUES ($1, NOW(), $2, true, 10, 10, false, false, CURRENT_DATE)`,
+        [user.id, endDate]
+      );
+    }
+    
+    // Update user premium status
+    await query(
+      'UPDATE users SET is_premium = true WHERE id = $1',
+      [user.id]
+    );
+    
+    console.log(`⭐ Admin granted premium: ${user.username} for ${days} days`);
+    
+    res.json({
+      success: true,
+      message: `Premium activated for ${days} days`,
+      user: {
+        username: user.username,
+        email: user.email,
+        user_number: user.user_number
+      },
+      end_date: endDate,
+      days: days
+    });
+    
+  } catch (error) {
+    console.error('Grant premium error:', error);
+    res.status(500).json({ error: 'Failed to grant premium' });
+  }
+});
+
+// ============================================
+// REVOKE PREMIUM (ADMIN)
+// ============================================
+router.post('/users/revoke-premium', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userIdentifier } = req.body;
+    
+    if (!userIdentifier) {
+      return res.status(400).json({ error: 'User identifier required' });
+    }
+    
+    // Find user
+    let userQuery = `
+      SELECT id, username, email, user_number, is_premium 
+      FROM users 
+      WHERE email = $1 OR username = $1 OR user_number = $2
+      LIMIT 1
+    `;
+    
+    const userNumberMatch = userIdentifier.match(/^#?(\d+)$/);
+    const userNumber = userNumberMatch ? parseInt(userNumberMatch[1]) : null;
+    
+    const userResult = await query(userQuery, [userIdentifier, userNumber]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userResult.rows[0];
+    
+    if (!user.is_premium) {
+      return res.status(400).json({ error: 'User does not have premium' });
+    }
+    
+    // Deactivate all subscriptions
+    await query(
+      'UPDATE premium_subscriptions SET is_active = false WHERE user_id = $1',
+      [user.id]
+    );
+    
+    // Update user premium status
+    await query(
+      'UPDATE users SET is_premium = false WHERE id = $1',
+      [user.id]
+    );
+    
+    console.log(`❌ Admin revoked premium: ${user.username}`);
+    
+    res.json({
+      success: true,
+      message: 'Premium deactivated',
+      user: {
+        username: user.username,
+        email: user.email,
+        user_number: user.user_number
+      }
+    });
+    
+  } catch (error) {
+    console.error('Revoke premium error:', error);
+    res.status(500).json({ error: 'Failed to revoke premium' });
+  }
+});
 
 export default router;
