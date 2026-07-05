@@ -7,6 +7,16 @@ import { query } from '../config/database.js';
 import { logManualActivity } from '../middleware/activity-logger.js';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
+
+// Strict rate limit for code verification (5 attempts per 15 min per IP)
+const codeVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 const router = express.Router();
 
@@ -85,7 +95,7 @@ function generateRandomUsername() {
 // ============================================
 
 // Register with access code (Step 1 - Verify code exists)
-router.post('/register/verify-code', async (req, res) => {
+router.post('/register/verify-code', codeVerifyLimiter, async (req, res) => {
   try {
     const { accessCode } = req.body;
     
@@ -125,11 +135,24 @@ router.post('/register/verify-code', async (req, res) => {
 // Complete registration with access code and Google data
 router.post('/register/complete-oauth', async (req, res) => {
   try {
-    const { accessCode, email, googleId } = req.body;
+    const { accessCode, registration_token } = req.body;
     
-    if (!accessCode || !email || !googleId) {
+    if (!accessCode || !registration_token) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+    
+    // Verify the registration token (signed by server during OAuth callback)
+    let oauthData;
+    try {
+      oauthData = jwt.verify(registration_token, process.env.JWT_SECRET);
+      if (oauthData.purpose !== 'registration') {
+        return res.status(400).json({ error: 'Invalid registration token' });
+      }
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid or expired registration token. Please try Google login again.' });
+    }
+    
+    const { email, googleId } = oauthData;
     
     // Verify access code
     const codeResult = await query(
@@ -253,13 +276,17 @@ router.get('/google/callback', (req, res, next) => {
           return res.redirect(`${frontendUrl}/?error=no_profile`);
         }
         
-        const dataString = JSON.stringify({
-          email: profile.email || profile.emails?.[0]?.value,
-          googleId: profile.id || profile.googleId
-        });
-        const encodedData = Buffer.from(dataString).toString('base64');
+        const email = profile.email || profile.emails?.[0]?.value;
+        const googleId = profile.id || profile.googleId;
         
-        return res.redirect(`${frontendUrl}/access-code?data=${encodedData}`);
+        // Create a short-lived signed registration token (10 minutes)
+        const registrationToken = jwt.sign(
+          { email, googleId, purpose: 'registration' },
+          process.env.JWT_SECRET,
+          { expiresIn: '10m' }
+        );
+        
+        return res.redirect(`${frontendUrl}/access-code?reg_token=${registrationToken}`);
       }
       
       // User exists - login

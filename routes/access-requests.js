@@ -1,12 +1,23 @@
 import express from 'express';
 import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { requireAdmin } from '../middleware/admin.js';
 import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 
 const router = express.Router();
 
+// Strict rate limit for access requests (5 per 15 min per IP)
+const requestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // Request access code with Instagram handle
-router.post('/request', async (req, res) => {
+router.post('/request', requestLimiter, async (req, res) => {
   try {
     const { email, googleId, instagramHandle } = req.body;
     
@@ -116,12 +127,9 @@ router.get('/status/:email', async (req, res) => {
   }
 });
 
-// Admin: Get all pending requests (requires auth)
-router.get('/admin/pending', authenticateToken, async (req, res) => {
+// Admin: Get all pending requests (requires auth + admin)
+router.get('/admin/pending', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    // TODO: Add admin role check
-    // For now, any authenticated user can see (you'll add admin check in Phase 2)
-    
     const result = await query(
       `SELECT id, email, google_id, instagram_handle, status, requested_at 
        FROM access_requests 
@@ -141,11 +149,9 @@ router.get('/admin/pending', authenticateToken, async (req, res) => {
 });
 
 // Admin: Approve request and generate code
-router.post('/admin/approve/:id', authenticateToken, async (req, res) => {
+router.post('/admin/approve/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // TODO: Add admin role check
     
     // Get request
     const requestResult = await query(
@@ -197,12 +203,10 @@ router.post('/admin/approve/:id', authenticateToken, async (req, res) => {
 });
 
 // Admin: Reject request
-router.post('/admin/reject/:id', authenticateToken, async (req, res) => {
+router.post('/admin/reject/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    
-    // TODO: Add admin role check
     
     // Update request
     const result = await query(
@@ -234,7 +238,7 @@ router.post('/admin/reject/:id', authenticateToken, async (req, res) => {
 function generateAccessCode() {
   const prefix = 'LOVE';
   const year = new Date().getFullYear();
-  const random = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const random = crypto.randomBytes(8).toString('hex').toUpperCase();
   return `${prefix}${year}-${random}`;
 }
 

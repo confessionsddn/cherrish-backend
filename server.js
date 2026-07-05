@@ -58,6 +58,7 @@ app.set('io', io);
 
 // Middleware
 app.use(helmet());
+app.set('trust proxy', 1); // Trust first proxy (for correct req.ip and rate limiting)
 app.use(cors({
   origin: [
     'https://cherrish.in',
@@ -69,8 +70,8 @@ app.use(cors({
   credentials: true,
 }))
 app.options('*', cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
@@ -131,47 +132,6 @@ app.get('/', (req, res) => {
       messages: '/api/messages'
     }
   });
-});
-
-// Setup admin (intentionally locked down)
-app.get('/setup-first-admin', async (req, res) => {
-  try {
-    const setupSecret = process.env.ADMIN_SETUP_SECRET;
-    const providedSecret = req.query.secret;
-    const isDevelopment = process.env.NODE_ENV === 'development';
-
-    if (!isDevelopment && (!setupSecret || providedSecret !== setupSecret)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin setup route is disabled'
-      });
-    }
-
-    const { query } = await import('./config/database.js');
-    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT false`);
-    const userCheck = await query(`SELECT * FROM users WHERE email = 'itmconfessionddn@gmail.com'`);
-    
-    if (userCheck.rows.length === 0) {
-      return res.json({
-        success: false,
-        message: 'You need to create an account first! Login with Google, then come back here.'
-      });
-    }
-    
-    await query(`UPDATE users SET is_admin = true WHERE email = 'itmconfessionddn@gmail.com'`);
-    const result = await query(`SELECT username, email, is_admin FROM users WHERE email = 'itmconfessionddn@gmail.com'`);
-    
-    res.json({
-      success: true,
-      message: '🎉 YOU ARE NOW ADMIN!',
-      user: result.rows[0]
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
 });
 
 // 404 handler
