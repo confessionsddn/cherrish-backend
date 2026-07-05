@@ -269,15 +269,16 @@ router.get('/google/callback', (req, res, next) => {
       if (!user) {
         console.log('⚠️ New user - needs access code');
         
-        // Get OAuth data from session/request
-        const profile = req.user || info?.profile;
+        // Get OAuth data from request (set by passport strategy)
+        const profile = req.oauthProfile;
         
-        if (!profile) {
+        if (!profile || !profile.email || !profile.googleId) {
+          console.error('❌ No OAuth profile data available');
           return res.redirect(`${frontendUrl}/?error=no_profile`);
         }
         
-        const email = profile.email || profile.emails?.[0]?.value;
-        const googleId = profile.id || profile.googleId;
+        const email = profile.email;
+        const googleId = profile.googleId;
         
         // Create a short-lived signed registration token (10 minutes)
         const registrationToken = jwt.sign(
