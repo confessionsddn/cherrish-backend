@@ -26,6 +26,7 @@ import adminRoutes from './routes/admin.js';
 import adminMessagesRouter from './routes/admin-messages.js';
 import pollsRoutes from './routes/polls.js';
 import messagesRoutes from './routes/messages.js';
+import itmVotingRoutes from './routes/itm-voting.js';
 
 dotenv.config();
 
@@ -63,6 +64,7 @@ app.use(cors({
   origin: [
     'https://cherrish.in',
     'https://www.cherrish.in',
+    'https://vote.cherrish.in',
     'http://localhost:3000' // Keep for local dev
   ],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -114,6 +116,7 @@ app.use('/api/polls', pollsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/itm-voting', itmVotingRoutes);
 
 
 // Root route
