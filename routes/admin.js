@@ -1174,4 +1174,160 @@ router.post('/users/revoke-premium', authenticateToken, requireAdmin, async (req
   }
 });
 
+// ============================================
+// REPORTS - View & Resolve
+// ============================================
+router.get('/reports', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT 
+        cr.id,
+        cr.confession_id,
+        cr.reason,
+        cr.details,
+        cr.status,
+        cr.created_at,
+        reporter.username as reporter_username,
+        reporter.user_number as reporter_user_number,
+        reporter.email as reporter_email,
+        author.username as confession_username,
+        author.user_number as confession_user_number,
+        c.content as confession_content,
+        c.mood_zone as confession_mood_zone
+       FROM confession_reports cr
+       JOIN users reporter ON cr.reported_by = reporter.id
+       JOIN confessions c ON cr.confession_id = c.id
+       JOIN users author ON c.user_id = author.id
+       ORDER BY cr.created_at DESC`
+    );
+
+    res.json({ success: true, reports: result.rows });
+  } catch (error) {
+    console.error('Get reports error:', error);
+    res.status(500).json({ error: 'Failed to get reports' });
+  }
+});
+
+router.post('/reports/:id/resolve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action } = req.body; // 'dismiss' or 'remove'
+
+    if (action === 'remove') {
+      // Get the confession ID from the report
+      const reportResult = await query(
+        'SELECT confession_id FROM confession_reports WHERE id = $1',
+        [id]
+      );
+      if (reportResult.rows.length > 0) {
+        await query(
+          'UPDATE confessions SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2',
+          [req.user.id, reportResult.rows[0].confession_id]
+        );
+      }
+    }
+
+    await query(
+      `UPDATE confession_reports SET status = 'resolved', reviewed_by = $1, reviewed_at = NOW() WHERE id = $2`,
+      [req.user.email, id]
+    );
+
+    await query(
+      `INSERT INTO admin_action_logs (admin_id, action_type, target_type, target_id, ip_address)
+       VALUES ($1, $2, 'report', $3, $4)`,
+      [req.user.id, action === 'remove' ? 'report_remove_confession' : 'report_dismiss', id, getClientIP(req)]
+    );
+
+    res.json({ success: true, message: action === 'remove' ? 'Confession removed' : 'Report dismissed' });
+  } catch (error) {
+    console.error('Resolve report error:', error);
+    res.status(500).json({ error: 'Failed to resolve report' });
+  }
+});
+
+// ============================================
+// ACCESS CODES - View requests, approve/reject, generate
+// ============================================
+router.get('/access-requests', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, email, google_id, instagram_handle, status, requested_at as created_at
+       FROM access_requests
+       ORDER BY requested_at DESC`
+    );
+    res.json({ success: true, requests: result.rows });
+  } catch (error) {
+    console.error('Get access requests error:', error);
+    res.status(500).json({ error: 'Failed to get access requests' });
+  }
+});
+
+router.post('/access-requests/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const requestResult = await query('SELECT * FROM access_requests WHERE id = $1', [id]);
+    if (requestResult.rows.length === 0) return res.status(404).json({ error: 'Request not found' });
+
+    const request = requestResult.rows[0];
+    if (request.status !== 'pending') return res.status(400).json({ error: 'Already reviewed' });
+
+    // Generate code
+    const crypto = await import('crypto');
+    const code = `LOVE${new Date().getFullYear()}-${crypto.default.randomBytes(8).toString('hex').toUpperCase()}`;
+
+    await query('INSERT INTO access_codes (code, is_used) VALUES ($1, false)', [code]);
+    await query(
+      `UPDATE access_requests SET status = 'approved', generated_code = $1, reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3`,
+      [code, req.user.email, id]
+    );
+
+    res.json({ success: true, message: 'Approved!', code, email: request.email });
+  } catch (error) {
+    console.error('Approve request error:', error);
+    res.status(500).json({ error: 'Failed to approve' });
+  }
+});
+
+router.post('/access-requests/:id/reject', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const result = await query(
+      `UPDATE access_requests SET status = 'rejected', admin_notes = $1, reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3 AND status = 'pending' RETURNING email`,
+      [reason || 'Not verified', req.user.email, id]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Request not found' });
+
+    res.json({ success: true, message: 'Rejected' });
+  } catch (error) {
+    console.error('Reject request error:', error);
+    res.status(500).json({ error: 'Failed to reject' });
+  }
+});
+
+router.post('/codes/generate', async (req, res) => {
+  try {
+    const { count = 10 } = req.body;
+    const num = Math.min(Math.max(parseInt(count) || 10, 1), 1000);
+
+    const crypto = await import('crypto');
+    const codes = [];
+
+    for (let i = 0; i < num; i++) {
+      const code = `LOVE${new Date().getFullYear()}-${crypto.default.randomBytes(8).toString('hex').toUpperCase()}`;
+      await query('INSERT INTO access_codes (code, is_used) VALUES ($1, false)', [code]);
+      codes.push(code);
+    }
+
+    console.log(`🎫 Admin generated ${num} access codes`);
+    res.json({ success: true, codes, message: `${num} codes generated` });
+  } catch (error) {
+    console.error('Generate codes error:', error);
+    res.status(500).json({ error: 'Failed to generate codes' });
+  }
+});
+
 export default router;
