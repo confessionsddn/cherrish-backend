@@ -1,205 +1,120 @@
-// backend/routes/notifications.js
+// backend/routes/notifications.js — COMPLETE with in-app + push endpoints
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
 import { query } from '../config/database.js';
-import { sendNotification, NotificationTemplates, sendToAll } from '../services/oneSignalService.js';
+import { sendToAll, NotificationTemplates } from '../services/oneSignalService.js';
+import { enqueueBroadcast } from '../services/notificationService.js';
 
 const router = express.Router();
 
 // ============================================
-// SAVE USER'S ONESIGNAL PLAYER ID
+// REGISTER PLAYER ID (multi-device)
 // ============================================
-
 router.post('/register', authenticateToken, async (req, res) => {
   try {
-    const { player_id, push_enabled = true } = req.body;
+    const { player_id, device_type = 'web' } = req.body;
     const userId = req.user.id;
-    
+
     if (!player_id) {
       return res.status(400).json({ error: 'Player ID required' });
     }
-    
+
+    // Upsert into user_player_ids (multi-device)
     await query(
-      `UPDATE users 
-       SET onesignal_player_id = $1, push_enabled = $2 
-       WHERE id = $3`,
-      [player_id, push_enabled, userId]
+      `INSERT INTO user_player_ids (user_id, player_id, device_type, last_active_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (player_id) 
+       DO UPDATE SET user_id = $1, last_active_at = NOW()`,
+      [userId, player_id, device_type]
     );
-    
-    console.log(`✅ OneSignal registered: ${userId} → ${player_id}`);
-    
-    res.json({
-      success: true,
-      message: 'Push notifications enabled!'
-    });
-    
+
+    console.log(`✅ Player registered: ${userId} → ${player_id} (${device_type})`);
+
+    res.json({ success: true, message: 'Push notifications enabled!' });
   } catch (error) {
-    console.error('Register OneSignal error:', error);
-    res.status(500).json({ error: 'Failed to register notifications' });
+    console.error('Register player error:', error);
+    res.status(500).json({ error: 'Failed to register' });
   }
 });
 
 // ============================================
-// TOGGLE PUSH NOTIFICATIONS
+// UNREGISTER PLAYER ID (on logout)
 // ============================================
-
-router.post('/toggle', authenticateToken, async (req, res) => {
+router.delete('/unregister', authenticateToken, async (req, res) => {
   try {
-    const { enabled } = req.body;
+    const { player_id } = req.body;
     const userId = req.user.id;
-    
-    await query(
-      'UPDATE users SET push_enabled = $1 WHERE id = $2',
-      [enabled, userId]
-    );
-    
-    res.json({
-      success: true,
-      push_enabled: enabled,
-      message: enabled ? 'Notifications enabled' : 'Notifications disabled'
-    });
-    
+
+    if (player_id) {
+      await query(
+        'DELETE FROM user_player_ids WHERE player_id = $1 AND user_id = $2',
+        [player_id, userId]
+      );
+    }
+
+    res.json({ success: true, message: 'Device unregistered' });
   } catch (error) {
-    console.error('Toggle notifications error:', error);
-    res.status(500).json({ error: 'Failed to toggle notifications' });
+    console.error('Unregister error:', error);
+    res.status(500).json({ error: 'Failed to unregister' });
   }
 });
 
 // ============================================
-// GET NOTIFICATION SETTINGS
+// GET IN-APP NOTIFICATIONS (paginated)
 // ============================================
-
-router.get('/settings', authenticateToken, async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    
+    const { limit = 50, offset = 0 } = req.query;
+
     const result = await query(
-      'SELECT onesignal_player_id, push_enabled FROM users WHERE id = $1',
+      `SELECT id, type, title, message, data, is_read, created_at
+       FROM notifications
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, parseInt(limit), parseInt(offset)]
+    );
+
+    res.json({ success: true, notifications: result.rows });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ error: 'Failed to get notifications' });
+  }
+});
+
+// ============================================
+// GET UNREAD COUNT (for bell badge)
+// ============================================
+router.get('/unread-count', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const result = await query(
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = false',
       [userId]
     );
-    
-    res.json({
-      success: true,
-      has_player_id: !!result.rows[0].onesignal_player_id,
-      push_enabled: result.rows[0].push_enabled
-    });
-    
+
+    res.json({ success: true, unread_count: parseInt(result.rows[0].count) });
   } catch (error) {
-    console.error('Get settings error:', error);
-    res.status(500).json({ error: 'Failed to get settings' });
+    console.error('Unread count error:', error);
+    res.status(500).json({ error: 'Failed to get count' });
   }
 });
 
 // ============================================
-// ADMIN: SEND ANNOUNCEMENT TO ALL USERS
+// MARK ALL AS READ
 // ============================================
-
-router.post('/announce', authenticateToken, async (req, res) => {
+router.post('/mark-read', authenticateToken, async (req, res) => {
   try {
-    if (!req.user.is_admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
-    
-    const { title, message, target_audience = 'all' } = req.body;
-    
-    if (!title || !message) {
-      return res.status(400).json({ error: 'Title and message required' });
-    }
-    
-    // Save announcement to database
-    const announcementResult = await query(
-      `INSERT INTO system_announcements (created_by, title, message, target_audience)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id`,
-      [req.user.id, title, message, target_audience]
-    );
-    
-    const announcementId = announcementResult.rows[0].id;
-    
-    // Send push notification
-    const template = NotificationTemplates.announcement(title, message);
-    
-    const result = await sendToAll({
-      title: template.title,
-      message: template.message,
-      data: {
-        type: 'announcement',
-        announcement_id: announcementId
-      },
-      url: 'https://www.cherrish.in'
-    });
-    
-    if (result.success) {
-      console.log(`📢 Announcement sent: ${title}`);
-    }
-    
-    res.json({
-      success: true,
-      message: 'Announcement sent to all users!',
-      announcement_id: announcementId,
-      notification_result: result
-    });
-    
-  } catch (error) {
-    console.error('Send announcement error:', error);
-    res.status(500).json({ error: 'Failed to send announcement' });
-  }
-});
-
-// ============================================
-// ADMIN: GET ANNOUNCEMENT STATS
-// ============================================
-
-router.get('/announcements/stats', authenticateToken, async (req, res) => {
-  try {
-    if (!req.user.is_admin) {
-      return res.status(403).json({ error: 'Admin only' });
-    }
-    
-    const result = await query(
-      `SELECT 
-        a.id,
-        a.title,
-        a.message,
-        a.created_at,
-        COUNT(ar.id) as read_count,
-        (SELECT COUNT(*) FROM users WHERE push_enabled = true) as total_users
-       FROM system_announcements a
-       LEFT JOIN announcement_reads ar ON a.id = ar.announcement_id
-       GROUP BY a.id
-       ORDER BY a.created_at DESC
-       LIMIT 20`
-    );
-    
-    res.json({
-      success: true,
-      announcements: result.rows
-    });
-    
-  } catch (error) {
-    console.error('Get announcement stats error:', error);
-    res.status(500).json({ error: 'Failed to get stats' });
-  }
-});
-
-// ============================================
-// MARK ANNOUNCEMENT AS READ
-// ============================================
-
-router.post('/announcements/:id/read', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
     const userId = req.user.id;
-    
+
     await query(
-      `INSERT INTO announcement_reads (announcement_id, user_id)
-       VALUES ($1, $2)
-       ON CONFLICT (announcement_id, user_id) DO NOTHING`,
-      [id, userId]
+      'UPDATE notifications SET is_read = true WHERE user_id = $1 AND is_read = false',
+      [userId]
     );
-    
-    res.json({ success: true });
-    
+
+    res.json({ success: true, unread_count: 0 });
   } catch (error) {
     console.error('Mark read error:', error);
     res.status(500).json({ error: 'Failed to mark as read' });
@@ -207,222 +122,117 @@ router.post('/announcements/:id/read', authenticateToken, async (req, res) => {
 });
 
 // ============================================
-// GET ACTIVE ANNOUNCEMENTS FOR USER
+// GET PREFERENCES
 // ============================================
-
-router.get('/announcements/active', authenticateToken, async (req, res) => {
+router.get('/preferences', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    
+
     const result = await query(
-      `SELECT 
-        a.id,
-        a.title,
-        a.message,
-        a.type,
-        a.created_at,
-        ar.id IS NOT NULL as is_read
-       FROM system_announcements a
-       LEFT JOIN announcement_reads ar ON a.id = ar.announcement_id AND ar.user_id = $1
-       WHERE a.is_active = true
-       AND (a.show_until IS NULL OR a.show_until > NOW())
-       ORDER BY a.created_at DESC`,
+      'SELECT notification_preferences FROM users WHERE id = $1',
       [userId]
     );
-    
+
+    const prefs = result.rows[0]?.notification_preferences || {
+      reactions: true, gifts: true, themes: true, replies: true,
+      reply_likes: true, announcements: true, polls: true, account_status: true
+    };
+
+    res.json({ success: true, preferences: prefs });
+  } catch (error) {
+    console.error('Get preferences error:', error);
+    res.status(500).json({ error: 'Failed to get preferences' });
+  }
+});
+
+// ============================================
+// UPDATE PREFERENCES
+// ============================================
+router.put('/preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { preferences } = req.body;
+
+    if (!preferences || typeof preferences !== 'object') {
+      return res.status(400).json({ error: 'Invalid preferences object' });
+    }
+
+    await query(
+      'UPDATE users SET notification_preferences = $1 WHERE id = $2',
+      [JSON.stringify(preferences), userId]
+    );
+
+    res.json({ success: true, preferences });
+  } catch (error) {
+    console.error('Update preferences error:', error);
+    res.status(500).json({ error: 'Failed to update preferences' });
+  }
+});
+
+// ============================================
+// ADMIN: SEND ANNOUNCEMENT (enhanced with NotificationService)
+// ============================================
+router.post('/announce', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user.is_admin) {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+
+    const { title, message, target_audience = 'all' } = req.body;
+
+    if (!title || !message) {
+      return res.status(400).json({ error: 'Title and message required' });
+    }
+
+    // Broadcast via NotificationService (in-app + push queue)
+    const io = req.app.get('io');
+    const count = await enqueueBroadcast({
+      type: 'announcement',
+      title: `📢 ${title}`,
+      message,
+      data: { url: '/community' },
+      excludeUserId: req.user.id,
+      io
+    });
+
+    // Also send directly via OneSignal "All" segment for immediate push
+    await sendToAll({
+      title: `📢 ${title}`,
+      message,
+      data: { type: 'announcement' },
+      url: 'https://www.cherrish.in/community'
+    });
+
+    console.log(`📢 Announcement: "${title}" → ${count} users`);
+
     res.json({
       success: true,
-      announcements: result.rows
+      message: 'Announcement sent!',
+      recipients: count
     });
-    
   } catch (error) {
-    console.error('Get active announcements error:', error);
-    res.status(500).json({ error: 'Failed to get announcements' });
+    console.error('Announce error:', error);
+    res.status(500).json({ error: 'Failed to send announcement' });
   }
 });
 
 export default router;
 
 // ============================================
-// HELPER FUNCTIONS TO TRIGGER NOTIFICATIONS
-// (Call these from other routes)
+// EXPORTED HELPERS (called from other routes)
+// These are kept for backward compatibility but
+// new code should use NotificationService directly
 // ============================================
 
-// Trigger reply notification
-export const notifyReply = async (confessionId, replierId, replyContent) => {
-  try {
-    // Get confession owner
-    const confessionResult = await query(
-      `SELECT c.user_id, c.content, u.onesignal_player_id, u.push_enabled
-       FROM confessions c
-       JOIN users u ON c.user_id = u.id
-       WHERE c.id = $1`,
-      [confessionId]
-    );
-    
-    if (confessionResult.rows.length === 0) return;
-    
-    const owner = confessionResult.rows[0];
-    
-    // Don't notify if replier is owner
-    if (owner.user_id === replierId) return;
-    
-    // Get replier info
-    const replierResult = await query(
-      'SELECT username FROM users WHERE id = $1',
-      [replierId]
-    );
-    
-    const replierUsername = replierResult.rows[0]?.username || 'Someone';
-    const confessionPreview = owner.content.substring(0, 50) + (owner.content.length > 50 ? '...' : '');
-    
-    // Queue notification
-    const template = NotificationTemplates.reply(replierUsername, confessionPreview);
-    
-    await query(
-      `INSERT INTO notification_queue (user_id, notification_type, title, message, data)
-       VALUES ($1, 'reply', $2, $3, $4)`,
-      [
-        owner.user_id,
-        template.title,
-        template.message,
-        JSON.stringify({
-          confession_id: confessionId,
-          replier_username: replierUsername,
-          url: `https://www.cherrish.in/?confession=${confessionId}`
-        })
-      ]
-    );
-    
-  } catch (error) {
-    console.error('Notify reply error:', error);
-  }
-};
-
-// Trigger gift notification
 export const notifyGift = async (confessionId, senderId, giftType, giftName) => {
-  try {
-    const confessionResult = await query(
-      `SELECT c.user_id, c.content, u.is_premium
-       FROM confessions c
-       JOIN users u ON c.user_id = u.id
-       WHERE c.id = $1`,
-      [confessionId]
-    );
-    
-    if (confessionResult.rows.length === 0) return;
-    
-    const owner = confessionResult.rows[0];
-    const isPremium = owner.is_premium;
-    
-    // Get sender info (only if recipient is premium)
-    let senderUsername = 'Someone';
-    if (isPremium) {
-      const senderResult = await query(
-        'SELECT username FROM users WHERE id = $1',
-        [senderId]
-      );
-      senderUsername = senderResult.rows[0]?.username || 'Someone';
-    }
-    
-    const confessionPreview = owner.content.substring(0, 40) + '...';
-    const template = NotificationTemplates.gift(senderUsername, giftName, confessionPreview);
-    
-    await query(
-      `INSERT INTO notification_queue (user_id, notification_type, title, message, data)
-       VALUES ($1, 'gift', $2, $3, $4)`,
-      [
-        owner.user_id,
-        template.title,
-        template.message,
-        JSON.stringify({
-          confession_id: confessionId,
-          gift_type: giftType,
-          sender_username: isPremium ? senderUsername : 'Anonymous',
-          url: `https://www.cherrish.in/?confession=${confessionId}`
-        })
-      ]
-    );
-    
-  } catch (error) {
-    console.error('Notify gift error:', error);
-  }
+  // Handled by NotificationService in gifts.js now
+  // This export is kept so existing imports don't break
 };
 
-// Trigger reactions notification (batched - send once per hour)
-export const notifyReactions = async (confessionId, newReactionsCount) => {
-  try {
-    // Only send if 5+ new reactions
-    if (newReactionsCount < 5) return;
-    
-    const confessionResult = await query(
-      `SELECT user_id, content FROM confessions WHERE id = $1`,
-      [confessionId]
-    );
-    
-    if (confessionResult.rows.length === 0) return;
-    
-    const confession = confessionResult.rows[0];
-    const confessionPreview = confession.content.substring(0, 50) + '...';
-    
-    const template = NotificationTemplates.reactions(newReactionsCount, confessionPreview);
-    
-    await query(
-      `INSERT INTO notification_queue (user_id, notification_type, title, message, data)
-       VALUES ($1, 'reactions', $2, $3, $4)
-       ON CONFLICT DO NOTHING`,
-      [
-        confession.user_id,
-        template.title,
-        template.message,
-        JSON.stringify({
-          confession_id: confessionId,
-          reactions_count: newReactionsCount,
-          url: `https://www.cherrish.in/?confession=${confessionId}`
-        })
-      ]
-    );
-    
-  } catch (error) {
-    console.error('Notify reactions error:', error);
-  }
+export const notifyReply = async (confessionId, replierId, replyContent) => {
+  // Handled by NotificationService in replies.js now
 };
 
-// Trigger premium expiry warning (run daily via cron)
-export const notifyPremiumExpiry = async () => {
-  try {
-    // Get users whose premium expires in 3 days
-    const result = await query(
-      `SELECT ps.user_id, ps.end_date
-       FROM premium_subscriptions ps
-       JOIN users u ON ps.user_id = u.id
-       WHERE ps.is_active = true
-       AND ps.end_date > NOW()
-       AND ps.end_date < NOW() + INTERVAL '3 days'
-       AND u.push_enabled = true`
-    );
-    
-    for (const sub of result.rows) {
-      const daysLeft = Math.ceil((new Date(sub.end_date) - new Date()) / (1000 * 60 * 60 * 24));
-      
-      const template = NotificationTemplates.premiumExpiry(daysLeft);
-      
-      await query(
-        `INSERT INTO notification_queue (user_id, notification_type, title, message, data)
-         VALUES ($1, 'premium_expiry', $2, $3, $4)`,
-        [
-          sub.user_id,
-          template.title,
-          template.message,
-          JSON.stringify({
-            days_left: daysLeft,
-            url: 'https://www.cherrish.in/premium'
-          })
-        ]
-      );
-    }
-    
-  } catch (error) {
-    console.error('Notify premium expiry error:', error);
-  }
+export const notifyReactions = async (confessionId, count) => {
+  // Handled by NotificationService in confessions.js now
 };
