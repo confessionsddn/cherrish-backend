@@ -2,7 +2,7 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
 import { query, getClient } from '../config/database.js';
-import { notifyGift } from './notifications.js';
+import { enqueueNotification } from '../services/notificationService.js';
 
 const router = express.Router();
 
@@ -135,7 +135,31 @@ router.post('/send', authenticateToken, async (req, res) => {
       }
       
       await client.query('COMMIT');
-      await notifyGift(confession_id, senderId, gift_type, gift.name);
+      
+      // Notify gift recipient (async)
+      const io = req.app.get('io');
+      const senderName = senderResult.rows[0].is_premium ? senderResult.rows[0].username : 'Someone';
+      enqueueNotification({
+        userId: recipientId,
+        type: 'gift',
+        title: '🎁 Gift received!',
+        message: `${senderName} sent you ${gift.name}!`,
+        data: { confession_id, gift_type, url: '/' },
+        io,
+        authorId: senderId
+      }).catch(err => console.error('Gift notif error:', err));
+      
+      // Notify theme unlock if applicable
+      if (themeUnlocked) {
+        enqueueNotification({
+          userId: recipientId,
+          type: 'theme_unlock',
+          title: '🎨 Theme unlocked!',
+          message: `You unlocked the ${gift.theme} theme! Go to settings to activate it.`,
+          data: { theme: gift.theme, url: '/' },
+          io
+        }).catch(err => console.error('Theme unlock notif error:', err));
+      }
 
       console.log(`🎁 Gift sent: ${gift.name} from ${senderId} to ${recipientId}`);
       

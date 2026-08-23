@@ -6,6 +6,7 @@ import { uploadAudio } from '../config/cloudinary.js';
 import multer from 'multer';
 import { logManualActivity } from '../middleware/activity-logger.js';
 import { confessionRateLimit } from '../middleware/rateLimit.js';
+import { enqueueReactionMilestone } from '../services/notificationService.js';
 import { trackActionIP } from '../middleware/ipTracking.js';
 const router = express.Router();
 
@@ -615,6 +616,19 @@ router.post('/:id/react', authenticateToken, async (req, res) => {
     
     // Update trending (async)
     updateTrendingScore(id).catch(err => console.error('Trending error:', err));
+    
+    // Check reaction milestones (async - non-blocking)
+    const totalReactions = result.heart_count + result.like_count + result.cry_count + result.laugh_count;
+    const confessionForNotif = await query('SELECT user_id, content FROM confessions WHERE id = $1', [id]);
+    if (confessionForNotif.rows.length > 0) {
+      enqueueReactionMilestone({
+        confessionId: id,
+        userId: confessionForNotif.rows[0].user_id,
+        totalReactions,
+        confessionPreview: confessionForNotif.rows[0].content,
+        io: req.app.get('io')
+      }).catch(err => console.error('Milestone notif error:', err));
+    }
     
     // Cleanup old cooldowns async
     query(`DELETE FROM reaction_cooldowns 

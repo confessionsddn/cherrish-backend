@@ -411,6 +411,15 @@ logManualActivity(req.user.id, 'buy_premium', { premium_until: endDate }, null, 
 
       await client.query('COMMIT');
       console.log('✅ Premium activated:', req.user.id);
+      
+      // Notify user about premium activation
+      const { enqueueNotification } = await import('../services/notificationService.js');
+      enqueueNotification({
+        userId: req.user.id, type: 'premium',
+        title: '⭐ Welcome to Premium!',
+        message: 'You now have 10 spotlights, 10 boosts, free voice notes, and 150 bonus credits!',
+        data: { url: '/' }, io: req.app.get('io')
+      }).catch(() => {});
 
     } catch (dbError) {
       await client.query('ROLLBACK');

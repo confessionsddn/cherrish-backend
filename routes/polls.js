@@ -6,6 +6,7 @@
 import express from 'express';
 import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { enqueueBroadcast } from '../services/notificationService.js';
 
 const router = express.Router();
 
@@ -115,6 +116,16 @@ router.post('/create', authenticateToken, isAdmin, async (req, res) => {
     if (req.app.get('io')) {
       req.app.get('io').emit('poll_created', poll);
     }
+    
+    // Notify all users about new poll (async)
+    enqueueBroadcast({
+      type: 'poll',
+      title: '📊 New poll!',
+      message: sanitizedQuestion.substring(0, 80),
+      data: { poll_id: poll.id, url: '/community' },
+      excludeUserId: req.user.id,
+      io: req.app.get('io')
+    }).catch(err => console.error('Poll notif error:', err));
 
     res.status(201).json({
       message: 'Poll created successfully',

@@ -1,8 +1,7 @@
 import express from 'express';
 import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
-import { notifyReply } from './notifications.js';
-import { logManualActivity } from '../middleware/activity-logger.js';
+import { enqueueNotification, enqueueReplyLike } from '../services/notificationService.js';
 const router = express.Router();
 
 // Get all replies for a confession
@@ -81,6 +80,20 @@ logManualActivity(req.user.id, 'post_reply', { confession_id }, confession_id, 0
     );
     
     console.log('✅ Reply posted:', req.user.username);
+    
+    // Notify confession author (async, non-blocking)
+    const confessionOwner = await query('SELECT user_id, content FROM confessions WHERE id = $1', [confession_id]);
+    if (confessionOwner.rows.length > 0) {
+      enqueueNotification({
+        userId: confessionOwner.rows[0].user_id,
+        type: 'reply',
+        title: '💬 New reply!',
+        message: `${userInfo.rows[0].username} replied: "${content.substring(0, 40)}..."`,
+        data: { confession_id, url: '/' },
+        io: req.app.get('io'),
+        authorId: req.user.id // skip if self-reply
+      }).catch(err => console.error('Reply notif error:', err));
+    }
     
     res.json({
       success: true,
@@ -186,6 +199,18 @@ router.post('/:replyId/like', authenticateToken, async (req, res) => {
       'SELECT likes_count FROM confession_replies WHERE id = $1',
       [replyId]
     );
+    
+    // Notify reply author (async, batched)
+    const replyInfo = await query('SELECT user_id, content FROM confession_replies WHERE id = $1', [replyId]);
+    if (replyInfo.rows.length > 0) {
+      enqueueReplyLike({
+        replyId,
+        replyAuthorId: replyInfo.rows[0].user_id,
+        likerId: userId,
+        replyPreview: replyInfo.rows[0].content,
+        io: req.app.get('io')
+      }).catch(err => console.error('Reply-like notif error:', err));
+    }
     
     res.json({
       success: true,

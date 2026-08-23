@@ -372,6 +372,15 @@ router.post('/users/:userId/ban', async (req, res) => {
       ]
     );
     
+    // Notify banned user
+    const { enqueueNotification: notifyUser } = await import('../services/notificationService.js');
+    notifyUser({
+      userId, type: 'account_status',
+      title: '🚫 Account banned',
+      message: `Your account has been banned ${duration === 'permanent' ? 'permanently' : 'for ' + duration + ' days'}.`,
+      data: { url: '/' }, io: req.app.get('io')
+    }).catch(() => {});
+    
     res.json({
       success: true,
       message: `User banned for ${duration === 'permanent' ? 'permanently' : duration + ' days'}`
@@ -403,6 +412,15 @@ router.post('/users/:userId/unban', async (req, res) => {
        VALUES ($1, 'unban', 'user', $2, $3)`,
       [req.user.id, userId, getClientIP(req)]
     );
+    
+    // Notify unbanned user
+    const { enqueueNotification: notifyUnban } = await import('../services/notificationService.js');
+    notifyUnban({
+      userId, type: 'account_status',
+      title: '✅ Access restored!',
+      message: 'Your account has been unbanned. Welcome back!',
+      data: { url: '/' }, io: req.app.get('io')
+    }).catch(() => {});
     
     res.json({
       success: true,
