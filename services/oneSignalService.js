@@ -235,16 +235,16 @@ import { query } from '../config/database.js';
 export const getUserPlayerIds = async (userIds) => {
   try {
     const result = await query(
-      `SELECT id, onesignal_player_id 
-       FROM users 
-       WHERE id = ANY($1) 
-       AND onesignal_player_id IS NOT NULL
-       AND push_enabled = true`,
+      `SELECT user_id, player_id 
+       FROM user_player_ids 
+       WHERE user_id = ANY($1)`,
       [userIds]
     );
     
+    // Group by user_id: { userId: [player_id1, player_id2, ...] }
     return result.rows.reduce((acc, row) => {
-      acc[row.id] = row.onesignal_player_id;
+      if (!acc[row.user_id]) acc[row.user_id] = [];
+      acc[row.user_id].push(row.player_id);
       return acc;
     }, {});
     
@@ -255,98 +255,107 @@ export const getUserPlayerIds = async (userIds) => {
 };
 
 // ============================================
-// PROCESS NOTIFICATION QUEUE
-// (Run this periodically via cron job)
+// PROCESS NOTIFICATION QUEUE (ENHANCED)
+// Multi-device, retry logic, proper failure handling
 // ============================================
 
 export const processNotificationQueue = async () => {
   try {
-    // Get pending notifications
+    // Get pending notifications (not sent, not permanently failed, max 100)
     const result = await query(
       `SELECT * FROM notification_queue 
-       WHERE sent = false 
+       WHERE is_sent = false AND failed = false
        ORDER BY created_at ASC 
        LIMIT 100`
     );
     
     if (result.rows.length === 0) {
-      console.log('📭 Notification queue empty');
       return;
     }
     
-    console.log(`📬 Processing ${result.rows.length} notifications`);
+    console.log(`📬 Processing ${result.rows.length} push notifications`);
     
     for (const notification of result.rows) {
       try {
-        // Get user's player ID
-        const userResult = await query(
-          'SELECT onesignal_player_id, push_enabled FROM users WHERE id = $1',
+        // Get ALL player IDs for this user (multi-device)
+        const playerResult = await query(
+          'SELECT player_id FROM user_player_ids WHERE user_id = $1',
           [notification.user_id]
         );
         
-        if (userResult.rows.length === 0 || !userResult.rows[0].push_enabled) {
-          // Mark as sent even if user doesn't have push enabled
+        if (playerResult.rows.length === 0) {
+          // No subscribed devices — mark as sent with reason
           await query(
             `UPDATE notification_queue 
-             SET sent = true, sent_at = NOW(), error = 'push_disabled'
+             SET is_sent = true, fail_reason = 'no_player_ids'
              WHERE id = $1`,
             [notification.id]
           );
           continue;
         }
         
-        const player_id = userResult.rows[0].onesignal_player_id;
+        const playerIds = playerResult.rows.map(r => r.player_id);
+        const notificationData = typeof notification.data === 'string' 
+          ? JSON.parse(notification.data) 
+          : (notification.data || {});
         
-        if (!player_id) {
-          await query(
-            `UPDATE notification_queue 
-             SET sent = true, sent_at = NOW(), error = 'no_player_id'
-             WHERE id = $1`,
-            [notification.id]
-          );
-          continue;
-        }
-        
-        // Send notification
-        const notificationData = notification.data ? JSON.parse(notification.data) : {};
-        
-        const sendResult = await sendNotification({
-          user_id: notification.user_id,
-          player_id: player_id,
+        // Send to all devices
+        const sendResult = await sendBulkNotification({
+          player_ids: playerIds,
           title: notification.title,
           message: notification.message,
           data: notificationData,
-          url: notificationData.url
+          url: notificationData.url || 'https://www.cherrish.in'
         });
         
         if (sendResult.success) {
+          // Success — mark as sent
           await query(
             `UPDATE notification_queue 
-             SET sent = true, sent_at = NOW()
-             WHERE id = $1`,
-            [notification.id]
+             SET is_sent = true, onesignal_notification_id = $1
+             WHERE id = $2`,
+            [sendResult.notification_id, notification.id]
           );
         } else {
-          await query(
-            `UPDATE notification_queue 
-             SET error = $1
-             WHERE id = $2`,
-            [JSON.stringify(sendResult.error), notification.id]
-          );
+          // Failure — increment retry or mark as permanently failed
+          const newRetryCount = (notification.retry_count || 0) + 1;
+          
+          if (newRetryCount >= 3) {
+            await query(
+              `UPDATE notification_queue 
+               SET failed = true, retry_count = $1, fail_reason = $2
+               WHERE id = $3`,
+              [newRetryCount, JSON.stringify(sendResult.error || 'max_retries_exceeded'), notification.id]
+            );
+          } else {
+            await query(
+              `UPDATE notification_queue 
+               SET retry_count = $1, fail_reason = $2
+               WHERE id = $3`,
+              [newRetryCount, JSON.stringify(sendResult.error || 'delivery_failed'), notification.id]
+            );
+          }
+          
+          // Handle 410 Gone — remove stale player IDs
+          if (sendResult.error?.errors?.invalid_player_ids) {
+            for (const staleId of sendResult.error.errors.invalid_player_ids) {
+              await query('DELETE FROM user_player_ids WHERE player_id = $1', [staleId]);
+              console.log(`🗑️ Removed stale player_id: ${staleId}`);
+            }
+          }
         }
         
       } catch (error) {
-        console.error(`❌ Error processing notification ${notification.id}:`, error);
+        console.error(`❌ Error processing notification ${notification.id}:`, error.message);
+        const newRetry = (notification.retry_count || 0) + 1;
         await query(
-          `UPDATE notification_queue 
-           SET error = $1
-           WHERE id = $2`,
-          [error.message, notification.id]
+          `UPDATE notification_queue SET retry_count = $1, fail_reason = $2 WHERE id = $3`,
+          [newRetry, error.message, notification.id]
         );
       }
     }
     
-    console.log('✅ Notification queue processed');
+    console.log('✅ Push notification queue processed');
     
   } catch (error) {
     console.error('❌ Process queue error:', error);
