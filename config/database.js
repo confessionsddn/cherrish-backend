@@ -13,7 +13,7 @@ const pool = new Pool({
   ssl: {
     rejectUnauthorized: false
   },
-  // OPTIMIZED SETTINGS FOR SUPABASE POOLER
+  // OPTIMIZED SETTINGS FOR SUPABASE SESSION POOLER (port 5432)
   max: 20,                      // Increase max connections
   min: 5,                       // Keep 5 connections warm
   idleTimeoutMillis: 30000,     // Close idle clients after 30s

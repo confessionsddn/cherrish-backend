@@ -46,8 +46,8 @@ router.post('/send', authenticateToken, async (req, res) => {
     
     // Check if confession exists
     const confessionResult = await query(
-      'SELECT id, user_id FROM confessions WHERE id = $1 AND status = $\'approved\'',
-      [confession_id]
+      'SELECT id, user_id FROM confessions WHERE id = $1 AND status = $2',
+      [confession_id, 'approved']
     );
     
     if (confessionResult.rows.length === 0) {
