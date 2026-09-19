@@ -72,9 +72,11 @@ router.get('/', optionalAuth, async (req, res) => {
         u.username,
         u.user_number,
         u.is_premium as is_premium_user,
+        t.theme_name as author_theme,
         (c.heart_count + c.like_count + c.cry_count + c.laugh_count) as total_reactions
       FROM confessions c
       JOIN users u ON c.user_id = u.id
+      LEFT JOIN user_active_themes t ON t.user_id = c.user_id AND t.is_active = true
       WHERE c.status = 'approved'
     `;
     
@@ -159,9 +161,11 @@ router.get('/:id', optionalAuth, async (req, res) => {
         c.laugh_count,
         c.status,
         u.username,
-        u.user_number
+        u.user_number,
+        t.theme_name as author_theme
         FROM confessions c
         JOIN users u ON c.user_id = u.id
+        LEFT JOIN user_active_themes t ON t.user_id = c.user_id AND t.is_active = true
         WHERE c.id = $1`,
       [id]
     );

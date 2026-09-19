@@ -10,23 +10,40 @@ const router = express.Router();
 // GIFT CONFIGURATION
 // ============================================
 
+// Each gift maps to a card skin (theme). unlock_at = how many of that gift a
+// user must RECEIVE before the matching card skin unlocks. Thresholds are
+// spread between 25 (min) and 100 (max) to vary the grind per skin.
 const GIFT_CATALOG = {
   // EFFECTS (Awards)
-  gold_hearts: { name: 'Sparkle Hearts', price: 25, type: 'effect', theme: 'sparkle', unlock_at: 50 },
-  cyber_glitch: { name: 'Cyber Glitch', price: 35, type: 'effect', theme: 'cyber', unlock_at: 50 },
-  holo_foil: { name: 'Holo Foil', price: 50, type: 'effect', theme: 'holo', unlock_at: 50 },
-  sunset_bg: { name: 'Vaporwave', price: 40, type: 'effect', theme: 'vaporwave', unlock_at: 50 },
-  starry_night: { name: 'Galactic Mode', price: 45, type: 'effect', theme: 'galaxy', unlock_at: 50 },
-  retro_vhs: { name: 'Retro VHS', price: 30, type: 'effect', theme: 'retro', unlock_at: 50 },
-  
+  gold_hearts:  { name: 'Sparkle Hearts', price: 25,  type: 'effect', theme: 'sparkle',   emoji: '💖', unlock_at: 25 },
+  cyber_glitch: { name: 'Cyber Glitch',   price: 35,  type: 'effect', theme: 'cyber',     emoji: '⚡', unlock_at: 60 },
+  holo_foil:    { name: 'Holo Foil',      price: 50,  type: 'effect', theme: 'holo',      emoji: '🌈', unlock_at: 80 },
+  sunset_bg:    { name: 'Vaporwave',      price: 40,  type: 'effect', theme: 'vaporwave', emoji: '🌆', unlock_at: 50 },
+  starry_night: { name: 'Galactic Mode',  price: 45,  type: 'effect', theme: 'galaxy',    emoji: '🌌', unlock_at: 70 },
+  retro_vhs:    { name: 'Retro VHS',      price: 30,  type: 'effect', theme: 'retro',     emoji: '📼', unlock_at: 40 },
+
   // PHYSICAL GIFTS
-  roses: { name: 'Mega Bouquet', price: 20, type: 'gift', theme: 'rose', unlock_at: 50 },
-  ring: { name: 'Diamond Ring', price: 100, type: 'gift', theme: 'diamond', unlock_at: 50 },
-  chocolates: { name: 'Luxury Box', price: 15, type: 'gift', theme: 'chocolate', unlock_at: 50 },
-  teddy: { name: 'Giant Teddy', price: 40, type: 'gift', theme: 'teddy', unlock_at: 50 },
-  mixtape: { name: 'Lo-Fi Mixtape', price: 15, type: 'gift', theme: 'lofi', unlock_at: 50 },
-  poem: { name: 'Epic Poem', price: 25, type: 'gift', theme: 'poem', unlock_at: 50 }
+  roses:        { name: 'Mega Bouquet',   price: 20,  type: 'gift',   theme: 'rose',      emoji: '🌹', unlock_at: 35 },
+  ring:         { name: 'Diamond Ring',   price: 100, type: 'gift',   theme: 'diamond',   emoji: '💍', unlock_at: 100 },
+  chocolates:   { name: 'Luxury Box',     price: 15,  type: 'gift',   theme: 'chocolate', emoji: '🍫', unlock_at: 30 },
+  teddy:        { name: 'Giant Teddy',    price: 40,  type: 'gift',   theme: 'teddy',     emoji: '🧸', unlock_at: 55 },
+  mixtape:      { name: 'Lo-Fi Mixtape',  price: 15,  type: 'gift',   theme: 'lofi',      emoji: '🎧', unlock_at: 45 },
+  poem:         { name: 'Epic Poem',      price: 25,  type: 'gift',   theme: 'poem',      emoji: '📜', unlock_at: 65 }
 };
+
+// Theme metadata keyed by theme name (the value stored in user_active_themes).
+// Lets any endpoint resolve a theme_name back to a friendly label + emoji.
+const THEME_META = Object.values(GIFT_CATALOG).reduce((acc, g) => {
+  acc[g.theme] = { label: g.name, emoji: g.emoji, gift_type: null };
+  return acc;
+}, {});
+// Attach the originating gift_type to each theme for reverse lookup.
+for (const [giftType, g] of Object.entries(GIFT_CATALOG)) {
+  THEME_META[g.theme].gift_type = giftType;
+}
+
+// All theme names in catalog order (used for admin "all unlocked" responses).
+const ALL_THEMES = Object.values(GIFT_CATALOG).map((g) => g.theme);
 
 // ============================================
 // SEND GIFT TO CONFESSION
@@ -292,7 +309,8 @@ router.get('/confession/:confessionId', authenticateToken, async (req, res) => {
 router.get('/inventory', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    
+    const isAdmin = !!req.user.is_admin;
+
     const result = await query(
       `SELECT 
         gift_type,
@@ -302,30 +320,101 @@ router.get('/inventory', authenticateToken, async (req, res) => {
        WHERE user_id = $1`,
       [userId]
     );
-    
-    // Format with progress
-    const inventory = result.rows.map(item => {
-      const giftInfo = GIFT_CATALOG[item.gift_type];
+
+    // Index received counts by gift_type for quick lookup.
+    const receivedByType = {};
+    result.rows.forEach((row) => {
+      receivedByType[row.gift_type] = row;
+    });
+
+    // Return the FULL catalog so the UI can show every gift's progress bar,
+    // even ones the user hasn't received yet (shows 0 / needed).
+    const inventory = Object.entries(GIFT_CATALOG).map(([giftType, giftInfo]) => {
+      const row = receivedByType[giftType];
+      const totalReceived = row ? row.total_received : 0;
+      // Admins have every skin unlocked with no grind.
+      const unlocked = isAdmin ? true : (row ? row.unlocked_theme : false);
       return {
-        gift_type: item.gift_type,
+        gift_type: giftType,
         gift_name: giftInfo.name,
-        total_received: item.total_received,
+        emoji: giftInfo.emoji,
+        total_received: totalReceived,
         needed_for_unlock: giftInfo.unlock_at,
-        remaining: Math.max(giftInfo.unlock_at - item.total_received, 0),
-        progress_percentage: Math.min((item.total_received / giftInfo.unlock_at) * 100, 100),
-        theme_unlocked: item.unlocked_theme,
+        remaining: isAdmin ? 0 : Math.max(giftInfo.unlock_at - totalReceived, 0),
+        progress_percentage: isAdmin ? 100 : Math.min((totalReceived / giftInfo.unlock_at) * 100, 100),
+        theme_unlocked: unlocked,
         theme_name: giftInfo.theme
       };
     });
-    
+
     res.json({
       success: true,
+      is_admin: isAdmin,
       inventory
     });
-    
+
   } catch (error) {
     console.error('Get inventory error:', error);
     res.status(500).json({ error: 'Failed to get inventory' });
+  }
+});
+
+// ============================================
+// GET GIFTS THE USER HAS SENT (history)
+// ============================================
+
+router.get('/sent', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { limit = 50, offset = 0 } = req.query;
+
+    const result = await query(
+      `SELECT 
+        g.id,
+        g.gift_type,
+        g.gift_price,
+        g.message,
+        g.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' as created_at,
+        g.confession_id,
+        c.content AS confession_content,
+        c.mood_zone,
+        u.username AS recipient_username,
+        u.user_number AS recipient_user_number
+       FROM confession_gifts g
+       JOIN confessions c ON g.confession_id = c.id
+       JOIN users u ON c.user_id = u.id
+       WHERE g.sender_id = $1
+       ORDER BY g.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, parseInt(limit), parseInt(offset)]
+    );
+
+    const sent = result.rows.map((row) => {
+      const giftInfo = GIFT_CATALOG[row.gift_type] || {};
+      return {
+        id: row.id,
+        gift_type: row.gift_type,
+        gift_name: giftInfo.name || row.gift_type,
+        emoji: giftInfo.emoji || '🎁',
+        gift_price: row.gift_price,
+        message: row.message,
+        created_at: row.created_at,
+        confession_id: row.confession_id,
+        // Short preview of the confession the gift was attached to.
+        confession_preview: row.confession_content
+          ? row.confession_content.slice(0, 80)
+          : '',
+        mood_zone: row.mood_zone,
+        recipient_username: row.recipient_username,
+        recipient_user_number: row.recipient_user_number
+      };
+    });
+
+    res.json({ success: true, sent });
+
+  } catch (error) {
+    console.error('Get sent gifts error:', error);
+    res.status(500).json({ error: 'Failed to get sent gifts' });
   }
 });
 
@@ -336,22 +425,50 @@ router.get('/inventory', authenticateToken, async (req, res) => {
 router.get('/themes', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    
-    const result = await query(
-      `SELECT 
-        theme_name,
-        is_active,
-        unlocked_at
-       FROM user_active_themes
-       WHERE user_id = $1`,
+    const isAdmin = !!req.user.is_admin;
+
+    // Which theme (if any) is currently active for this user.
+    const activeResult = await query(
+      `SELECT theme_name FROM user_active_themes 
+       WHERE user_id = $1 AND is_active = true LIMIT 1`,
       [userId]
     );
-    
+    const activeTheme = activeResult.rows[0]?.theme_name || null;
+
+    let themes;
+
+    if (isAdmin) {
+      // Admins have every theme unlocked, no grind required.
+      themes = ALL_THEMES.map((themeName) => ({
+        theme_name: themeName,
+        label: THEME_META[themeName]?.label || themeName,
+        emoji: THEME_META[themeName]?.emoji || '🎨',
+        is_active: themeName === activeTheme,
+        unlocked_at: null
+      }));
+    } else {
+      const result = await query(
+        `SELECT theme_name, is_active, unlocked_at
+         FROM user_active_themes
+         WHERE user_id = $1`,
+        [userId]
+      );
+      themes = result.rows.map((row) => ({
+        theme_name: row.theme_name,
+        label: THEME_META[row.theme_name]?.label || row.theme_name,
+        emoji: THEME_META[row.theme_name]?.emoji || '🎨',
+        is_active: row.is_active,
+        unlocked_at: row.unlocked_at
+      }));
+    }
+
     res.json({
       success: true,
-      themes: result.rows
+      is_admin: isAdmin,
+      active_theme: activeTheme,
+      themes
     });
-    
+
   } catch (error) {
     console.error('Get themes error:', error);
     res.status(500).json({ error: 'Failed to get themes' });
@@ -366,25 +483,43 @@ router.post('/themes/toggle', authenticateToken, async (req, res) => {
   try {
     const { theme_name, is_active } = req.body;
     const userId = req.user.id;
-    
-    // Check if user has this theme
+    const isAdmin = !!req.user.is_admin;
+
+    // Validate the theme name is real.
+    if (!ALL_THEMES.includes(theme_name)) {
+      return res.status(400).json({ error: 'Invalid theme' });
+    }
+
+    // Check if user has this theme unlocked.
     const themeResult = await query(
       'SELECT theme_name FROM user_active_themes WHERE user_id = $1 AND theme_name = $2',
       [userId, theme_name]
     );
-    
-    if (themeResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Theme not unlocked' });
+
+    const hasTheme = themeResult.rows.length > 0;
+
+    if (!hasTheme) {
+      if (isAdmin) {
+        // Admins can activate any theme; create the row on demand.
+        await query(
+          `INSERT INTO user_active_themes (user_id, theme_name, is_active)
+           VALUES ($1, $2, false)
+           ON CONFLICT (user_id, theme_name) DO NOTHING`,
+          [userId, theme_name]
+        );
+      } else {
+        return res.status(404).json({ error: 'Theme not unlocked' });
+      }
     }
-    
-    // If activating, deactivate all other themes first (only one active at a time)
+
+    // If activating, deactivate all other themes first (only one active at a time).
     if (is_active) {
       await query(
         'UPDATE user_active_themes SET is_active = false WHERE user_id = $1',
         [userId]
       );
     }
-    
+
     // Toggle theme
     await query(
       `UPDATE user_active_themes 
@@ -392,14 +527,14 @@ router.post('/themes/toggle', authenticateToken, async (req, res) => {
        WHERE user_id = $2 AND theme_name = $3`,
       [is_active, userId, theme_name]
     );
-    
+
     res.json({
       success: true,
       message: is_active ? `${theme_name} theme activated!` : `${theme_name} theme deactivated`,
       theme_name,
       is_active
     });
-    
+
   } catch (error) {
     console.error('Toggle theme error:', error);
     res.status(500).json({ error: 'Failed to toggle theme' });
