@@ -68,6 +68,7 @@ router.get('/', optionalAuth, async (req, res) => {
         c.boost_expires_at,
         c.views_count,
         c.total_impressions,  -- ADD THIS LINE
+        c.replies_count,
         c.user_id,
         u.username,
         u.user_number,
@@ -516,30 +517,47 @@ router.post('/:id/react', authenticateToken, async (req, res) => {
       });
     }
     
-    // ADD REACTION - Check cooldown first
-    const cooldownCheck = await query(
-      `SELECT total_reactions, window_start FROM reaction_cooldowns 
-       WHERE user_id = $1 
-       AND window_start > NOW() - INTERVAL '1 minute'`,
+    // ADD REACTION — atomically increment the collective cooldown counter
+    // FIRST, then check the limit. Doing the increment+check in one statement
+    // closes the race where several rapid requests all pass a read-only check
+    // before any of them bumps the counter (which let >20 slip through).
+    const REACTION_LIMIT = 20;
+    const cooldownResult = await query(
+      `INSERT INTO reaction_cooldowns (user_id, total_reactions, window_start, last_reaction_at)
+       VALUES ($1, 1, NOW(), NOW())
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         total_reactions = CASE
+           WHEN reaction_cooldowns.window_start < NOW() - INTERVAL '1 minute'
+           THEN 1
+           ELSE reaction_cooldowns.total_reactions + 1
+         END,
+         window_start = CASE
+           WHEN reaction_cooldowns.window_start < NOW() - INTERVAL '1 minute'
+           THEN NOW()
+           ELSE reaction_cooldowns.window_start
+         END,
+         last_reaction_at = NOW()
+       RETURNING total_reactions, window_start`,
       [userId]
     );
-    
-    if (cooldownCheck.rows.length > 0) {
-      const cooldown = cooldownCheck.rows[0];
-      
-      if (cooldown.total_reactions >= 20) {
-        const windowStart = new Date(cooldown.window_start);
-        const now = new Date();
-        const elapsed = Math.floor((now - windowStart) / 1000);
-        const timeLeft = Math.max(60 - elapsed, 0);
-        
-        return res.status(429).json({ 
-          error: `⏰ YOU CAN REACT ONLY 20 TIMES PER MINUTE! Wait ${timeLeft}s.`,
-          cooldown_seconds: timeLeft,
-          reactions_used: cooldown.total_reactions,
-          reactions_limit: 20
-        });
-      }
+
+    const cooldown = cooldownResult.rows[0];
+
+    // If this reaction pushed the user OVER the limit, reject it and DO NOT
+    // add the reaction (the counter is already at limit+ so it stays capped).
+    if (cooldown.total_reactions > REACTION_LIMIT) {
+      const windowStart = new Date(cooldown.window_start);
+      const now = new Date();
+      const elapsed = Math.floor((now - windowStart) / 1000);
+      const timeLeft = Math.max(60 - elapsed, 0);
+
+      return res.status(429).json({
+        error: `wait a minute, bruh!🤣`,
+        cooldown_seconds: timeLeft,
+        reactions_used: REACTION_LIMIT,
+        reactions_limit: REACTION_LIMIT
+      });
     }
     
     // Check credits
@@ -581,30 +599,8 @@ router.post('/:id/react', authenticateToken, async (req, res) => {
       [userId, `Reacted ${reaction_type}`]
     );
     
-    // Update cooldown
-    try {
-      await query(
-        `INSERT INTO reaction_cooldowns (user_id, total_reactions, window_start, last_reaction_at)
-         VALUES ($1, 1, NOW(), NOW())
-         ON CONFLICT (user_id) 
-         DO UPDATE SET 
-           total_reactions = CASE 
-             WHEN reaction_cooldowns.window_start < NOW() - INTERVAL '1 minute'
-             THEN 1
-             ELSE reaction_cooldowns.total_reactions + 1
-           END,
-           window_start = CASE 
-             WHEN reaction_cooldowns.window_start < NOW() - INTERVAL '1 minute'
-             THEN NOW()
-             ELSE reaction_cooldowns.window_start
-           END,
-           last_reaction_at = NOW()`,
-        [userId]
-      );
-    } catch (cooldownError) {
-      console.error('Cooldown update error (non-critical):', cooldownError);
-    }
-    
+    // (Cooldown counter was already incremented atomically at the top.)
+
     const duration = Date.now() - startTime;
     console.log(`✅ Reaction added (${duration}ms):`, userId, '->', id, `(${reaction_type})`);
     
