@@ -66,8 +66,7 @@ router.post('/', authenticateToken, async (req, res) => {
        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at`, /* <--- FIXED TIMEZONE */
       [confession_id, req.user.id, content.trim()]
     );
-    await notifyReply(confession_id, req.user.id, content);
-logManualActivity(req.user.id, 'post_reply', { confession_id }, confession_id, 0);    // Increment confession replies count
+    // Increment confession replies count
     await query(
       'UPDATE confessions SET replies_count = replies_count + 1 WHERE id = $1',
       [confession_id]
