@@ -1,6 +1,52 @@
 // services/notificationService.js
 // Central notification service — handles enqueue, deduplication, batching, preferences
 import { query } from '../config/database.js';
+import { sendBulkNotification } from './oneSignalService.js';
+
+/**
+ * Attempt to deliver a push immediately for a freshly-enqueued notification.
+ * On success we mark the matching queue row as sent so the 2-minute cron
+ * doesn't send it again. On failure we leave the row for the cron to retry.
+ * This is best-effort and never throws — the queue remains the safety net.
+ */
+async function tryImmediatePush({ userId, type, title, message, data, queueId }) {
+  try {
+    const playerResult = await query(
+      'SELECT player_id FROM user_player_ids WHERE user_id = $1',
+      [userId]
+    );
+    if (playerResult.rows.length === 0) {
+      // No devices — mark queue row as sent so cron skips it.
+      if (queueId) {
+        await query(
+          `UPDATE notification_queue SET is_sent = true, fail_reason = 'no_player_ids' WHERE id = $1`,
+          [queueId]
+        );
+      }
+      return;
+    }
+
+    const playerIds = playerResult.rows.map((r) => r.player_id);
+    const result = await sendBulkNotification({
+      player_ids: playerIds,
+      title,
+      message,
+      data,
+      url: data?.url || 'https://www.cherrish.in'
+    });
+
+    if (result.success && queueId) {
+      await query(
+        `UPDATE notification_queue SET is_sent = true, onesignal_notification_id = $1 WHERE id = $2`,
+        [result.notification_id, queueId]
+      );
+    }
+    // If it failed, we intentionally leave is_sent = false so the cron retries.
+  } catch (err) {
+    // Swallow — cron will retry. Immediate push is an optimization, not a guarantee.
+    console.error('Immediate push error (will retry via queue):', err.message);
+  }
+}
 
 const MILESTONES = [10, 25, 50, 100, 250, 500];
 
@@ -8,7 +54,7 @@ const MILESTONES = [10, 25, 50, 100, 250, 500];
  * Enqueue a notification for a single user
  * Checks preferences, handles deduplication, emits Socket.io event
  */
-export async function enqueueNotification({ userId, type, title, message, data = {}, io, authorId = null }) {
+export async function enqueueNotification({ userId, type, title, message, data = {}, io, authorId = null, immediatePush = true }) {
   try {
     // Self-notification exclusion
     if (authorId && authorId === userId) return null;
@@ -43,12 +89,28 @@ export async function enqueueNotification({ userId, type, title, message, data =
     // Skip push if preference disabled
     if (prefs[typeKey] === false) return notifResult.rows[0];
 
-    // Insert into push queue
-    await query(
+    // Insert into push queue (safety net / retry mechanism)
+    const queueResult = await query(
       `INSERT INTO notification_queue (user_id, notification_type, title, message, data, is_sent)
-       VALUES ($1, $2, $3, $4, $5, false)`,
+       VALUES ($1, $2, $3, $4, $5, false)
+       RETURNING id`,
       [userId, type, title, message, JSON.stringify(data)]
     );
+
+    // Fire push immediately (don't await — keep the request fast). If it
+    // fails, the row stays unsent and the cron retries within 2 minutes.
+    // Broadcasts skip this (they push via sendToAll segment instead) to avoid
+    // one OneSignal API call per user and double-notifying.
+    if (immediatePush) {
+      tryImmediatePush({
+        userId,
+        type,
+        title,
+        message,
+        data,
+        queueId: queueResult.rows[0].id
+      });
+    }
 
     return notifResult.rows[0];
   } catch (error) {
@@ -75,12 +137,25 @@ export async function enqueueBroadcast({ type, title, message, data = {}, exclud
 
     let count = 0;
     for (const user of usersResult.rows) {
+      // immediatePush: false — the caller (e.g. /announce) delivers push via
+      // the OneSignal "All" segment in one call, so we don't push per-user.
       await enqueueNotification({
         userId: user.id,
-        type, title, message, data, io
+        type, title, message, data, io,
+        immediatePush: false
       });
       count++;
     }
+
+    // Mark these queued rows as sent so the cron doesn't re-send them 2 minutes
+    // later (the broadcast push is handled by sendToAll at the call site).
+    await query(
+      `UPDATE notification_queue
+       SET is_sent = true, fail_reason = 'broadcast_via_segment'
+       WHERE notification_type = $1 AND is_sent = false
+       AND created_at > NOW() - INTERVAL '1 minute'`,
+      [type]
+    );
 
     console.log(`📢 Broadcast: ${count} users notified (${type})`);
     return count;

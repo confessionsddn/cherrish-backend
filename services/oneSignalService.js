@@ -10,9 +10,28 @@ import fetch from 'node-fetch';
 // ONESIGNAL_APP_ID=your_app_id_here
 // ONESIGNAL_REST_API_KEY=your_rest_api_key_here
 
-const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID;
-const ONESIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY;
 const ONESIGNAL_API_URL = 'https://onesignal.com/api/v1';
+
+// Read env at call time (NOT module-load time). With ES modules, imports are
+// evaluated before dotenv.config() runs, so capturing these as top-level
+// constants can yield `undefined` locally. Reading lazily avoids that.
+const getAppId = () => process.env.ONESIGNAL_APP_ID;
+const getRestApiKey = () => process.env.ONESIGNAL_REST_API_KEY;
+
+// One-time config sanity check (deferred a tick so dotenv has run).
+setTimeout(() => {
+  const appId = getAppId();
+  const key = getRestApiKey();
+  if (!appId || !key) {
+    console.error(
+      '❌ OneSignal misconfigured — push notifications WILL NOT be delivered.\n' +
+      `   ONESIGNAL_APP_ID: ${appId ? 'set' : 'MISSING'}\n` +
+      `   ONESIGNAL_REST_API_KEY: ${key ? 'set' : 'MISSING'}`
+    );
+  } else {
+    console.log('✅ OneSignal configured (app_id present)');
+  }
+}, 0);
 
 // ============================================
 // SEND NOTIFICATION TO USER
@@ -33,7 +52,7 @@ export const sendNotification = async ({
     }
 
     const notification = {
-      app_id: ONESIGNAL_APP_ID,
+      app_id: getAppId(),
       include_player_ids: [player_id],
       headings: { en: title },
       contents: { en: message },
@@ -47,7 +66,7 @@ export const sendNotification = async ({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Basic ${ONESIGNAL_REST_API_KEY}`
+        'Authorization': `Basic ${getRestApiKey()}`
       },
       body: JSON.stringify(notification)
     });
@@ -81,19 +100,20 @@ export const sendBulkNotification = async ({
 }) => {
   try {
     const notification = {
-      app_id: ONESIGNAL_APP_ID,
+      app_id: getAppId(),
       include_player_ids: player_ids,
       headings: { en: title },
       contents: { en: message },
       data: data,
-      web_url: url || `https://www.cherrish.in`
+      web_url: url || `https://www.cherrish.in`,
+      chrome_web_icon: 'https://www.cherrish.in/icon-192.png'
     };
 
     const response = await fetch(`${ONESIGNAL_API_URL}/notifications`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Basic ${ONESIGNAL_REST_API_KEY}`
+        'Authorization': `Basic ${getRestApiKey()}`
       },
       body: JSON.stringify(notification)
     });
@@ -127,7 +147,7 @@ export const sendToAll = async ({
 }) => {
   try {
     const notification = {
-      app_id: ONESIGNAL_APP_ID,
+      app_id: getAppId(),
       included_segments: ['All'],
       headings: { en: title },
       contents: { en: message },
@@ -144,7 +164,7 @@ export const sendToAll = async ({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Basic ${ONESIGNAL_REST_API_KEY}`
+        'Authorization': `Basic ${getRestApiKey()}`
       },
       body: JSON.stringify(notification)
     });
