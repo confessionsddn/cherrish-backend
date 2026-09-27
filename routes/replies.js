@@ -1,8 +1,20 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { query } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { enqueueNotification, enqueueReplyLike } from '../services/notificationService.js';
 const router = express.Router();
+
+// Replies are free, so they're the most spammable surface. Cap creation per
+// user (keyed off authenticated user id, falling back to IP) to curb flooding.
+const replyCreateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.user?.id ? `u:${req.user.id}` : req.ip),
+  message: { error: 'Slow down — too many replies. Try again in a minute.' }
+});
 
 // Get all replies for a confession
 router.get('/confession/:confessionId', authenticateToken, async (req, res) => {
@@ -35,7 +47,7 @@ router.get('/confession/:confessionId', authenticateToken, async (req, res) => {
 });
 
 // Post a reply (FREE)
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, replyCreateLimiter, async (req, res) => {
   try {
     const { confession_id, content } = req.body;
     

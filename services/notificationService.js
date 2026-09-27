@@ -2,6 +2,7 @@
 // Central notification service — handles enqueue, deduplication, batching, preferences
 import { query } from '../config/database.js';
 import { sendBulkNotification } from './oneSignalService.js';
+import { mapTypeToPreferenceKey } from '../utils/notificationPrefs.js';
 
 /**
  * Attempt to deliver a push immediately for a freshly-enqueued notification.
@@ -283,24 +284,6 @@ export async function enqueueReplyLike({ replyId, replyAuthorId, likerId, replyP
     console.error('Reply-like notification error:', error.message);
     return null;
   }
-}
-
-/**
- * Map notification type to preference key
- */
-function mapTypeToPreferenceKey(type) {
-  const map = {
-    'reactions': 'reactions',
-    'gift': 'gifts',
-    'theme_unlock': 'themes',
-    'reply': 'replies',
-    'reply_like': 'reply_likes',
-    'announcement': 'announcements',
-    'poll': 'polls',
-    'premium': 'account_status',
-    'account_status': 'account_status'
-  };
-  return map[type] || type;
 }
 
 export default {

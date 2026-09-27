@@ -6,6 +6,7 @@ import { query, getClient } from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import jwt from 'jsonwebtoken';
 import { logManualActivity } from '../middleware/activity-logger.js';
+import { safeEqualHex } from '../utils/paymentCrypto.js';
 const router = express.Router();
 
 // Initialize Razorpay
@@ -111,7 +112,7 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Create order error:', error);
-    res.status(500).json({ error: 'Failed to create order', details: error.message });
+    res.status(500).json({ error: 'Failed to create order' });
   }
 });
 
@@ -137,7 +138,7 @@ router.post('/verify-payment', authenticateToken, async (req, res) => {
       .update(sign.toString())
       .digest('hex');
 
-    if (razorpay_signature !== expectedSign) {
+    if (!safeEqualHex(razorpay_signature, expectedSign)) {
       console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
@@ -259,10 +260,7 @@ logManualActivity(req.user.id, 'buy_credits', { credits_added: credits, package:
 
   } catch (error) {
     console.error('❌ Verify payment error:', error);
-    res.status(500).json({ 
-      error: 'Verification failed',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 
@@ -298,7 +296,7 @@ router.post('/create-subscription', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Create subscription error:', error);
-    res.status(500).json({ error: 'Failed to create subscription', details: error.message });
+    res.status(500).json({ error: 'Failed to create subscription' });
   }
 });
 
@@ -324,7 +322,7 @@ router.post('/verify-subscription', authenticateToken, async (req, res) => {
       .update(sign.toString())
       .digest('hex');
 
-    if (razorpay_signature !== expectedSign) {
+    if (!safeEqualHex(razorpay_signature, expectedSign)) {
       console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
@@ -437,10 +435,7 @@ logManualActivity(req.user.id, 'buy_premium', { premium_until: endDate }, null, 
 
   } catch (error) {
     console.error('❌ Verify subscription error:', error);
-    res.status(500).json({ 
-      error: 'Verification failed',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 
@@ -497,7 +492,7 @@ router.post('/create-unban-order', authenticateEvenIfBanned, async (req, res) =>
 
   } catch (error) {
     console.error('❌ Create unban order error:', error);
-    res.status(500).json({ error: 'Failed to create unban order', details: error.message });
+    res.status(500).json({ error: 'Failed to create unban order' });
   }
 });
 
@@ -524,7 +519,7 @@ router.post('/verify-unban-payment', authenticateEvenIfBanned, async (req, res) 
       .update(sign.toString())
       .digest('hex');
 
-    if (razorpay_signature !== expectedSign) {
+    if (!safeEqualHex(razorpay_signature, expectedSign)) {
       console.error('❌ Invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
@@ -603,10 +598,7 @@ router.post('/verify-unban-payment', authenticateEvenIfBanned, async (req, res) 
 
   } catch (error) {
     console.error('❌ Verify unban payment error:', error);
-    res.status(500).json({ 
-      error: 'Verification failed',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Verification failed' });
   }
 });
 

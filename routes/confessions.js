@@ -142,10 +142,12 @@ router.get('/', optionalAuth, async (req, res) => {
 });
 
 // Get single confession by ID
+// Shape mirrors the feed (GET /) so the frontend can inject the result
+// directly into the feed list for notification deep-links.
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const result = await query(
       `SELECT 
         c.id,
@@ -153,30 +155,39 @@ router.get('/:id', optionalAuth, async (req, res) => {
         c.mood_zone,
         c.is_boosted,
         c.audio_url,
-        c.gender_revealed,
-        c.gender,
-        c.created_at,
+        c.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata' as created_at,
         c.heart_count,
         c.like_count,
         c.cry_count,
         c.laugh_count,
         c.status,
+        c.trending_score,
+        c.is_spotlight,
+        c.spotlight_expires_at,
+        c.boost_multiplier,
+        c.boost_expires_at,
+        c.views_count,
+        c.total_impressions,
+        c.replies_count,
+        c.user_id,
         u.username,
         u.user_number,
-        t.theme_name as author_theme
+        u.is_premium as is_premium_user,
+        t.theme_name as author_theme,
+        (c.heart_count + c.like_count + c.cry_count + c.laugh_count) as total_reactions
         FROM confessions c
         JOIN users u ON c.user_id = u.id
         LEFT JOIN user_active_themes t ON t.user_id = c.user_id AND t.is_active = true
-        WHERE c.id = $1`,
+        WHERE c.id = $1 AND c.status = 'approved'`,
       [id]
     );
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Confession not found' });
     }
-    
+
     const confession = result.rows[0];
-logManualActivity(userId, 'post_confession', { mood_zone, confession_id: confession.id }, confession.id, -totalCost);    res.json({
+    res.json({
       confession: {
         ...confession,
         timestamp: formatTimestamp(confession.created_at),
@@ -185,10 +196,12 @@ logManualActivity(userId, 'post_confession', { mood_zone, confession_id: confess
           like: confession.like_count,
           cry: confession.cry_count,
           laugh: confession.laugh_count
-        }
+        },
+        premium: confession.audio_url !== null,
+        spotlight: confession.is_spotlight && new Date(confession.spotlight_expires_at) > new Date()
       }
     });
-    
+
   } catch (error) {
     console.error('Get confession error:', error);
     res.status(500).json({ error: 'Failed to fetch confession' });
@@ -281,7 +294,16 @@ router.post('/', authenticateToken,  confessionRateLimit,  // NEW!
     if (!content || !mood_zone) {
       return res.status(400).json({ error: 'Content and mood zone are required' });
     }
-    
+
+    // Bound content length server-side (don't trust the client). Prevents
+    // oversized payloads / abuse; matches a reasonable confession length.
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+    if (content.length > 2000) {
+      return res.status(400).json({ error: 'Confession is too long (max 2000 characters)' });
+    }
+
     const validMoodZones = ['Crush', 'Heartbreak', 'Secret Admirer', 'Love Stories'];
     if (!validMoodZones.includes(mood_zone)) {
       return res.status(400).json({ error: 'Invalid mood zone' });
