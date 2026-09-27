@@ -122,6 +122,69 @@ router.post('/mark-read', authenticateToken, async (req, res) => {
 });
 
 // ============================================
+// MARK ONE AS READ
+// ============================================
+router.patch('/:id/read', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const result = await query(
+      `UPDATE notifications SET is_read = true
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [id, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    // Return the fresh unread count so the client can sync its badge.
+    const countResult = await query(
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = false',
+      [userId]
+    );
+
+    res.json({ success: true, unread_count: parseInt(countResult.rows[0].count) });
+  } catch (error) {
+    console.error('Mark one read error:', error);
+    res.status(500).json({ error: 'Failed to mark as read' });
+  }
+});
+
+// ============================================
+// DELETE ONE NOTIFICATION
+// ============================================
+router.delete('/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const result = await query(
+      `DELETE FROM notifications
+       WHERE id = $1 AND user_id = $2
+       RETURNING is_read`,
+      [id, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    const countResult = await query(
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND is_read = false',
+      [userId]
+    );
+
+    res.json({ success: true, unread_count: parseInt(countResult.rows[0].count) });
+  } catch (error) {
+    console.error('Delete notification error:', error);
+    res.status(500).json({ error: 'Failed to delete notification' });
+  }
+});
+
+// ============================================
 // GET PREFERENCES
 // ============================================
 router.get('/preferences', authenticateToken, async (req, res) => {
