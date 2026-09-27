@@ -161,7 +161,7 @@ router.post('/send', authenticateToken, async (req, res) => {
         type: 'gift',
         title: '🎁 Gift received!',
         message: `${senderName} sent you ${gift.name}!`,
-        data: { confession_id, gift_type, url: '/' },
+        data: { confession_id, gift_type, url: `/?confession=${confession_id}` },
         io,
         authorId: senderId
       }).catch(err => console.error('Gift notif error:', err));

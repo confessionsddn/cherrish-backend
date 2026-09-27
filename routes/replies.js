@@ -88,7 +88,7 @@ router.post('/', authenticateToken, async (req, res) => {
         type: 'reply',
         title: '💬 New reply!',
         message: `${userInfo.rows[0].username} replied: "${content.substring(0, 40)}..."`,
-        data: { confession_id, url: '/' },
+        data: { confession_id, url: `/?confession=${confession_id}` },
         io: req.app.get('io'),
         authorId: req.user.id // skip if self-reply
       }).catch(err => console.error('Reply notif error:', err));
@@ -200,13 +200,14 @@ router.post('/:replyId/like', authenticateToken, async (req, res) => {
     );
     
     // Notify reply author (async, batched)
-    const replyInfo = await query('SELECT user_id, content FROM confession_replies WHERE id = $1', [replyId]);
+    const replyInfo = await query('SELECT user_id, content, confession_id FROM confession_replies WHERE id = $1', [replyId]);
     if (replyInfo.rows.length > 0) {
       enqueueReplyLike({
         replyId,
         replyAuthorId: replyInfo.rows[0].user_id,
         likerId: userId,
         replyPreview: replyInfo.rows[0].content,
+        confessionId: replyInfo.rows[0].confession_id,
         io: req.app.get('io')
       }).catch(err => console.error('Reply-like notif error:', err));
     }

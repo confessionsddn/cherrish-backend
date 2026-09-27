@@ -204,7 +204,7 @@ export async function enqueueReactionMilestone({ confessionId, userId, totalReac
       type: 'reactions',
       title: `🔥 ${nextMilestone} reactions!`,
       message: `Your confession "${preview}..." hit ${nextMilestone} reactions!`,
-      data: { confession_id: confessionId, milestone: nextMilestone, url: '/' },
+      data: { confession_id: confessionId, milestone: nextMilestone, url: `/?confession=${confessionId}` },
       io
     });
   } catch (error) {
@@ -216,7 +216,7 @@ export async function enqueueReactionMilestone({ confessionId, userId, totalReac
 /**
  * Enqueue reply-like notification with 5-minute batching
  */
-export async function enqueueReplyLike({ replyId, replyAuthorId, likerId, replyPreview, io }) {
+export async function enqueueReplyLike({ replyId, replyAuthorId, likerId, replyPreview, confessionId = null, io }) {
   try {
     // Self-like exclusion
     if (likerId === replyAuthorId) return null;
@@ -270,7 +270,12 @@ export async function enqueueReplyLike({ replyId, replyAuthorId, likerId, replyP
       type: 'reply_like',
       title: '❤️ Reply liked!',
       message: `Someone liked your reply "${preview}..."`,
-      data: { reply_id: replyId, batch_count: 1, url: '/' },
+      data: {
+        reply_id: replyId,
+        batch_count: 1,
+        confession_id: confessionId,
+        url: confessionId ? `/?confession=${confessionId}` : '/'
+      },
       io,
       authorId: likerId
     });

@@ -14,7 +14,7 @@ import { trackRegistrationIP, trackActionIP } from './middleware/ipTracking.js';
 import giftsRouter from './routes/gifts.js';
 import notificationsRouter from './routes/notifications.js';
 import cron from 'node-cron';
-import { processNotificationQueue } from './services/oneSignalService.js';
+import { processNotificationQueue, cleanupOldNotifications } from './services/oneSignalService.js';
 // Import ALL routes
 import authRoutes from './routes/auth.js';
 import confessionRoutes from './routes/confessions.js';
@@ -234,5 +234,17 @@ cron.schedule('*/2 * * * *', async () => {
 });
 
 console.log('✅ Notification cron job started (runs every 2 minutes)');
+
+// Daily cleanup of old notifications (runs at 03:30 server time)
+cron.schedule('30 3 * * *', async () => {
+  console.log('🧹 Running daily notification cleanup...');
+  try {
+    await cleanupOldNotifications();
+  } catch (error) {
+    console.error('❌ Cleanup cron error:', error);
+  }
+});
+
+console.log('✅ Notification cleanup cron started (runs daily at 03:30)');
 
 export default app;

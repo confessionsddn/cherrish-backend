@@ -381,3 +381,33 @@ export const processNotificationQueue = async () => {
     console.error('❌ Process queue error:', error);
   }
 };
+
+// ============================================
+// CLEANUP OLD NOTIFICATIONS
+// Keeps the notifications + queue tables lean. Runs on a daily cron.
+//  - Deletes READ in-app notifications older than 30 days (unread kept).
+//  - Deletes sent/failed queue rows older than 7 days (already delivered
+//    or permanently failed — no longer needed).
+// ============================================
+
+export const cleanupOldNotifications = async () => {
+  try {
+    const readResult = await query(
+      `DELETE FROM notifications
+       WHERE is_read = true AND created_at < NOW() - INTERVAL '30 days'`
+    );
+
+    const queueResult = await query(
+      `DELETE FROM notification_queue
+       WHERE (is_sent = true OR failed = true) AND created_at < NOW() - INTERVAL '7 days'`
+    );
+
+    const readCount = readResult.rowCount ?? 0;
+    const queueCount = queueResult.rowCount ?? 0;
+    console.log(`🧹 Notification cleanup: removed ${readCount} old read notifications, ${queueCount} old queue rows`);
+    return { readCount, queueCount };
+  } catch (error) {
+    console.error('❌ Notification cleanup error:', error);
+    return { readCount: 0, queueCount: 0 };
+  }
+};
