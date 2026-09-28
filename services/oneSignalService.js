@@ -5,6 +5,7 @@
 // ============================================
 
 import fetch from 'node-fetch';
+import { toAbsoluteUrl } from '../utils/notificationUrl.js';
 
 // ⚠️ ADD THESE TO YOUR .env FILE:
 // ONESIGNAL_APP_ID=your_app_id_here
@@ -17,6 +18,8 @@ const ONESIGNAL_API_URL = 'https://onesignal.com/api/v1';
 // constants can yield `undefined` locally. Reading lazily avoids that.
 const getAppId = () => process.env.ONESIGNAL_APP_ID;
 const getRestApiKey = () => process.env.ONESIGNAL_REST_API_KEY;
+
+
 
 // One-time config sanity check (deferred a tick so dotenv has run).
 setTimeout(() => {
@@ -57,7 +60,7 @@ export const sendNotification = async ({
       headings: { en: title },
       contents: { en: message },
       data: data,
-      web_url: url || `https://www.cherrish.in`,
+      web_url: toAbsoluteUrl(url),
       chrome_web_icon: 'https://www.cherrish.in/icon-192.png',
       chrome_web_badge: 'https://www.cherrish.in/badge-72.png'
     };
@@ -105,7 +108,7 @@ export const sendBulkNotification = async ({
       headings: { en: title },
       contents: { en: message },
       data: data,
-      web_url: url || `https://www.cherrish.in`,
+      web_url: toAbsoluteUrl(url),
       chrome_web_icon: 'https://www.cherrish.in/icon-192.png'
     };
 
@@ -152,7 +155,7 @@ export const sendToAll = async ({
       headings: { en: title },
       contents: { en: message },
       data: data,
-      web_url: url || `https://www.cherrish.in`
+      web_url: toAbsoluteUrl(url)
     };
 
     // Add filters if provided (e.g., premium users only)
